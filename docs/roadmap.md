@@ -23,6 +23,11 @@ flowchart LR
 - [x] Python FastAPI `/health`
 - [x] Flutter Android skeleton
 - [x] Design docs + `AGENTS.md`
+- [x] Backend scenario E2E harness (`backend/tests/`, health smoke)
+
+**Exit check:** `cd backend && uv sync --extra dev && uv run pytest` passes (health).
+
+**E2E:** `backend/tests/test_health.py`
 
 ## Milestone 1 — Indexer on Linux
 
@@ -36,6 +41,8 @@ flowchart LR
 
 **Exit check:** CLI or logs show N files indexed; re-run is idempotent.
 
+**E2E:** add `backend/tests/scenarios/test_indexer.py` (fixture library → N files; re-run idempotent; gone paths soft-detected).
+
 ## Milestone 2 — Metadata API
 
 **Outcome:** Tag and fetch files without Flutter.
@@ -46,6 +53,8 @@ flowchart LR
 - [ ] Manual curl/httpie script in docs or `scripts/`
 
 **Exit check:** Tag a file via API; delta returns it.
+
+**E2E:** add `backend/tests/scenarios/test_metadata_api.py`.
 
 ## Milestone 3 — Flutter catalog (list-only)
 
@@ -58,6 +67,8 @@ flowchart LR
 
 **Exit check:** Phone lists PC files while online; survives app restart with local catalog.
 
+**E2E:** backend still covers catalog list/delta as the phone would call them (extend metadata/delta scenarios). Flutter device E2E stays deferred.
+
 ## Milestone 4 — Pin + materialize
 
 **Outcome:** User pins a file; bytes land on phone; unpin can delete local bytes but keep listing.
@@ -69,6 +80,8 @@ flowchart LR
 
 **Exit check:** Airplane mode: pinned file opens; listed-only file does not.
 
+**E2E:** add `backend/tests/scenarios/test_pin_materialize.py` (availability pin + blob GET). Flutter/Maestro airplane-mode flow is Later.
+
 ## Milestone 5 — Phone → PC ingest
 
 **Outcome:** Camera (or share intent) uploads to PC with provenance.
@@ -78,6 +91,8 @@ flowchart LR
 - [ ] Confirm Linux retention
 
 **Exit check:** Photo taken on phone appears in PC catalog and blob store.
+
+**E2E:** add `backend/tests/scenarios/test_phone_ingest.py`.
 
 ## Milestone 6 — Ghost / restore UX
 
@@ -89,14 +104,30 @@ flowchart LR
 
 **Exit check:** Delete local copy, still see listing, restore from PC.
 
+**E2E:** add `backend/tests/scenarios/test_ghost_restore.py`.
+
 ## Milestone 7 — Thumbnails + search quality
 
 - [ ] Server-side thumbs for images
 - [ ] Listed-mode thumb sync (small payloads)
 - [ ] Basic search (name, tags; FTS later)
 
+**E2E:** extend scenarios for thumb endpoints / search when they exist.
+
+## Testing / AI guardrails
+
+Backend scenario E2E is the primary AI-proof loop: isolated temp `$HOMESYNC_DATA`, FastAPI `TestClient`, no phone required.
+
+1. Implement a roadmap exit check.
+2. Add or update the matching file under `backend/tests/scenarios/` (do not leave green “done” without the scenario).
+3. Run `cd backend && uv sync --extra dev && uv run pytest`.
+4. Do not skip or delete failing exit-check tests to “finish” a milestone.
+
+See `docs/development.md` (Quality checks) and `AGENTS.md` (Testing).
+
 ## Later / maybe
 
+- Flutter `integration_test` or Maestro: browse → pin → airplane-mode open (after Milestone 3–4 UI)
 - Multi-device phones
 - Auth tokens + NixOS module systemd service
 - Hash-dedup blob migration tooling
@@ -125,3 +156,5 @@ Record important choices here as they happen.
 | 2026-07-30 | Catalog + availability modes | Fits list/pin/restore requirements |
 | 2026-07-30 | Nix default shell = backend only | Avoid heavy Flutter deps on every enter |
 | 2026-07-30 | Avoid Nix `withPackages` for app deps | Prevents compiling SciPy/Pillow via Nix |
+| 2026-07-30 | Backend scenario E2E first; Flutter E2E later | AI loops need phone-free pytest; device UI waits for list/pin |
+| 2026-07-30 | Blobs at `blobs/<algo>/<hh>/<hh>/<fullhash>`; collision = refuse overwrite | Fan-out for FS/GUI; algo prefix for API + migration; never silent CAS overwrite |

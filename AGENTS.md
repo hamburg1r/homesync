@@ -31,7 +31,7 @@ flowchart TB
   end
 
   subgraph bytes [Byte layer — filesystem]
-    BLOB["blobs/ab/cd/<hash>"]
+    BLOB["blobs/<algo>/ab/cd/<hash>"]
   end
 
   FID --> HASH
@@ -107,15 +107,19 @@ WhatsApp restore flow is a **required** motivating example—see `docs/sync-prot
 ### Storage layout (target)
 
 ```text
-$data_root/
+$data_root/   # e.g. $HOMESYNC_DATA
   catalog.sqlite
   blobs/
-    ab/
-      cd/
-        <fullhash>          # raw bytes
+    <algo>/                 # e.g. blake3 (matches /v1/blobs/{algo}/{hash})
+      ab/                   # hash[0:2]
+        cd/                 # hash[2:4]
+          <full_hex_hash>   # raw bytes, no extension
   thumbs/                   # optional, derived
     <file_id or hash>.jpg
+  quarantine/               # collision / integrity rejects only (not normal store)
 ```
+
+Two-level hex fan-out avoids huge flat directories (GUI file managers / `ls`). Catalog is the UX — do not treat browsing `blobs/` as the product. Library-root files may stay **hash-in-place** until copied into this store. Same `(algo, hash)` ⇒ one blob; never overwrite on size/byte mismatch (see `docs/architecture.md`).
 
 Display names and “original paths” live in the DB, not as the only identity.
 
@@ -135,9 +139,9 @@ Display names and “original paths” live in the DB, not as the only identity.
 ```bash
 nix develop
 cd backend
-uv sync
+uv sync --extra dev
 uv run homesync-server          # 127.0.0.1:8787
-uv run pytest                   # when tests exist
+uv run pytest                   # scenario E2E (required after exit-check work)
 ruff check .
 ```
 
@@ -182,8 +186,10 @@ flutter run
 
 ### Testing
 
-- Prefer tests around catalog invariants (hash identity, soft delete, availability transitions) over UI snapshot spam.
-- Don’t require a phone to unit-test backend catalog logic.
+- **Primary AI guardrail:** backend scenario E2E under `backend/tests/` (FastAPI `TestClient`, temp `$HOMESYNC_DATA`). After implementing a roadmap exit check, add/update the matching `tests/scenarios/…` module and run `uv sync --extra dev && uv run pytest`. Do not mark a milestone done without that scenario.
+- Prefer catalog invariants (hash identity, soft delete, availability transitions) and API scenarios over UI snapshot spam.
+- Don’t require a phone to unit-test backend catalog logic. Flutter `integration_test` / Maestro is deferred until list + pin UI exists; never block catalog/API work on emulator tests.
+- Do not skip or delete failing exit-check scenarios to greenwash a change.
 
 ---
 

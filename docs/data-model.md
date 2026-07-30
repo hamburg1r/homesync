@@ -13,20 +13,24 @@ This document is the **intended** schema for Homesync. The code may not implemen
 ```mermaid
 erDiagram
   devices ||--o{ availability : has
+  devices ||--o{ library_roots : owns
   files ||--o{ availability : has
   files ||--o{ file_tags : has
   tags ||--o{ file_tags : has
   files ||--o{ file_paths : remembered
   files ||--o{ versions : may_have
   library_roots ||--o{ file_paths : contains
+  devices ||--o{ file_paths : introduced
 
   files {
     uuid file_id PK
     text content_hash
+    text hash_algo
     text mime_type
     int size_bytes
     text title
     text notes
+    datetime taken_at
     datetime created_at
     datetime updated_at
     datetime deleted_at
@@ -36,7 +40,37 @@ erDiagram
     uuid device_id PK
     text name
     text kind
+    datetime created_at
     datetime last_seen_at
+  }
+
+  library_roots {
+    uuid root_id PK
+    uuid device_id FK
+    text abs_path
+    text label
+    bool enabled
+  }
+
+  file_paths {
+    uuid id PK
+    uuid file_id FK
+    uuid root_id FK
+    text relative_path
+    text source_kind
+    uuid source_device_id FK
+    bool is_current
+    datetime seen_at
+    datetime gone_at
+  }
+
+  versions {
+    uuid version_id PK
+    uuid file_id FK
+    text content_hash
+    int size_bytes
+    datetime created_at
+    text note
   }
 
   availability {
@@ -185,6 +219,8 @@ Dedup policy recommendation:
 
 - Same hash from a new path → **same `file_id`**, add `file_paths` row (dedup storage).
 - User insists on separate logical items with identical bytes (rare) → allow force-new `file_id` later; not needed in v1.
+- On blob write, if `blobs/<algo>/…/<hash>` already exists: identical bytes → no-op; size/byte mismatch → **abort** (never overwrite). True-collision repair is offline (quarantine + re-key under another algo) — see `docs/architecture.md` Blob store layout.
+- Filesystem path for managed blobs: `blobs/<algo>/<hh>/<hh>/<fullhash>` (two-level hex fan-out).
 
 ## Metadata vs filesystem sidecars
 

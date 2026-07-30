@@ -1,0 +1,24 @@
+session_name: homesync
+start_directory: /home/hamburgir/repo/homesync
+windows:
+  - window_name: root
+    panes:
+      - shell_command: clear
+
+  - window_name: backend
+    start_directory: backend
+    layout: main-horizontal
+    options:
+      main-pane-height: "70%"
+    panes:
+      - shell_command: nvim
+      - shell_command: clear
+
+  - window_name: mobile
+    start_directory: mobile
+    layout: main-horizontal
+    options:
+      main-pane-height: "70%"
+    panes:
+      - shell_command: nvim
+      - shell_command: clear

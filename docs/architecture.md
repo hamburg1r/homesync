@@ -113,6 +113,36 @@ The indexer should support **multiple roots** configured in DB or config, e.g.:
 
 Each ingest stamps `root_id` + relative path for human recovery, while identity remains `file_id`/hash.
 
+## Blob store layout
+
+Managed content-addressed bytes live under `$HOMESYNC_DATA/blobs/` (never inside the git repo):
+
+```text
+$HOMESYNC_DATA/blobs/
+  <algo>/                 # e.g. blake3
+    ab/                   # content_hash[0:2]
+      cd/                 # content_hash[2:4]
+        <full_hex_hash>   # raw file bytes
+```
+
+Example: BLAKE3 digest `a1b2c3…` → `blobs/blake3/a1/b2/a1b2c3…`.
+
+| Rule | Detail |
+|---|---|
+| Fan-out | Two hex directory levels so leaf dirs stay small (file managers / tooling). |
+| Algo prefix | Matches `GET/PUT /v1/blobs/{algo}/{hash}`; allows hash migration without mixing digests. |
+| Filename | Full hex digest (not truncated); path is self-describing. |
+| Hash-in-place | Indexer may leave files under `library_roots` and only store hash+path in SQLite; this layout applies when bytes are **copied into** the managed store (phone ingest, unmanaged import, later dedup migration). |
+| UX | Catalog is primary; do not rely on GUI-browsing `blobs/`. |
+| Writes | `blob_path(data_root, algo, hex_hash)` helper; create parents; write temp in same leaf dir; `rename` atomically. Missing blob on read → degraded/missing, not invented bytes. |
+
+### Dedup vs true collision
+
+- **Same hash, same bytes** → one blob object; reuse `file_id` / add `file_paths` (normal dedup).
+- **Same hash, different bytes** (crypto collision) → refuse overwrite (`409` / integrity error). Compare size (and bytes or re-hash) when the path already exists.
+
+v1 does not ship an automatic collision resolver. If one is ever confirmed: leave the existing blob untouched, quarantine new bytes under `$HOMESYNC_DATA/quarantine/<uuid>`, prove with a second-algorithm digest, then re-key the quarantined object under another algo prefix (e.g. `blobs/sha256/…`) and point the new catalog row at that key. Do not weaken `(algo, hash) → one blob` on the happy path.
+
 ## Comparison to adjacent tools
 
 | Tool | Overlap | Why Homesync still exists |

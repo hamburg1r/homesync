@@ -53,7 +53,7 @@ Same pattern as other repos under `~/repo` (`camshare`, `fileman`).
 cd /home/hamburgir/repo/homesync
 nix develop
 cd backend
-uv sync
+uv sync --extra dev
 uv run homesync-server
 # → http://127.0.0.1:8787/health
 ```
@@ -69,13 +69,16 @@ backend/
     __init__.py
     main.py               # FastAPI app entry
   tests/
+    conftest.py           # temp HOMESYNC_DATA + TestClient fixtures
+    test_health.py        # Milestone 0 smoke
+    scenarios/            # roadmap exit-check E2E (grow with features)
 ```
 
 ### Dependency policy
 
 - Add Python deps with **uv** (`uv add …`), not with Nix `python.withPackages`.
 - Why: Nix packaging of scientific/imaging stacks can compile SciPy/Pillow forever on a weak PC.
-- `ruff` comes from the Nix shell (binary). Pytest: `uv add --dev pytest` when you start testing.
+- `ruff` comes from the Nix shell (binary). Dev tools (pytest, ruff): `uv sync --extra dev`.
 
 ### Suggested module growth
 
@@ -130,21 +133,38 @@ Recommend a configurable `$HOMESYNC_DATA` (default e.g. `~/.local/share/homesync
 ```text
 $HOMESYNC_DATA/
   catalog.sqlite
-  blobs/
+  blobs/<algo>/<hh>/<hh>/<fullhash>   # see docs/architecture.md
   thumbs/
+  quarantine/                         # integrity rejects only
 ```
 
 Do not store blobs inside the git repo. `data/` and `blobs/` are gitignored at repo root for accidental local runs.
 
 ## Quality checks
 
+### Backend scenario E2E
+
+Agents and humans should treat `uv run pytest` as the AI-proof guardrail. Tests use FastAPI `TestClient` against an isolated temp `$HOMESYNC_DATA` (see `tests/conftest.py`) — no phone, no real network bind.
+
 ```bash
-# backend
 cd backend
+uv sync --extra dev
 ruff check .
 uv run pytest
+```
 
-# mobile
+| Kind | Path | When to add |
+|---|---|---|
+| Smoke | `tests/test_health.py` | Milestone 0 (exists) |
+| Exit-check scenarios | `tests/scenarios/test_*.py` | With each roadmap milestone feature |
+
+Naming maps to roadmap exit checks (`test_indexer.py`, `test_metadata_api.py`, `test_pin_materialize.py`, …). Do **not** stub failing placeholders for unfinished milestones — add the scenario when the feature lands.
+
+Flutter / device E2E (`integration_test` or Maestro) is deferred until list + pin UI exists; do not block backend work on an emulator.
+
+### Mobile
+
+```bash
 cd mobile
 flutter analyze
 flutter test
