@@ -42,7 +42,8 @@ mobile/ios/Flutter/Flutter.podspec
 mobile/**/Generated.xcconfig
 mobile/**/flutter_export_environment.sh
 
-# IDE / OS
+# IDE / OS / editor agent rules (local only)
+.cursor/
 .idea/
 .vscode/
 *.swp

@@ -197,4 +197,4 @@ When you change:
 | Build order / non-goals | `docs/roadmap.md` |
 | How to run tools | this file |
 
-Agents: see root `AGENTS.md` and `.cursor/rules/`.
+Agents: see root `AGENTS.md` and `docs/`.

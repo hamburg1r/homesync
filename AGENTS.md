@@ -59,7 +59,6 @@ flowchart TB
 | `mobile/` | Android client | Flutter (Android only — no Linux/desktop Flutter target) |
 | `flake.nix` | Dev shells | `default`/`backend` (light), `mobile` (Flutter + JDK) |
 | `docs/` | Design docs | Canonical product/tech decisions |
-| `.cursor/rules/` | Short always-on / path-scoped agent rules | `.mdc` |
 
 Do **not** create a second competing backend language (Go/Rust) unless the human explicitly asks. Python was chosen for ship-speed on a weak machine; uv avoids Nix compiling heavy native Python wheels.
 
