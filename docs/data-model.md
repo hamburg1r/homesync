@@ -169,8 +169,9 @@ v1 may keep only head on `files` and append versions when hash changes for same 
 
 ### `tags` / `file_tags`
 
-Simple many-to-many. Tag names unique per library (casefold).
+Simple many-to-many. Tag names unique per library (casefold via `COLLATE NOCASE`).
 
+Implemented in schema migration `002_tags.sql` (Milestone 2). Tagging a file bumps `files.updated_at` so catalog delta clients observe the change.
 ### `availability`
 
 | Column | Type | Notes |

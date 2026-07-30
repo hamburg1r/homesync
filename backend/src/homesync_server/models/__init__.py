@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for the Homesync catalog (Milestone 1 subset)."""
+"""SQLAlchemy ORM models for the Homesync catalog."""
 
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ class File(Base):
     deleted_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     paths: Mapped[list[FilePath]] = relationship(back_populates="file")
+    file_tags: Mapped[list[FileTag]] = relationship(back_populates="file")
 
 
 class FilePath(Base):
@@ -82,3 +83,27 @@ class FilePath(Base):
 
     file: Mapped[File] = relationship(back_populates="paths")
     root: Mapped[LibraryRoot | None] = relationship(back_populates="paths")
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+
+    tag_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    color: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    file_tags: Mapped[list[FileTag]] = relationship(back_populates="tag")
+
+
+class FileTag(Base):
+    __tablename__ = "file_tags"
+
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("files.file_id"), primary_key=True
+    )
+    tag_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tags.tag_id"), primary_key=True
+    )
+
+    file: Mapped[File] = relationship(back_populates="file_tags")
+    tag: Mapped[Tag] = relationship(back_populates="file_tags")

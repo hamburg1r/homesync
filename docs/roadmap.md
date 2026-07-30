@@ -43,18 +43,18 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_indexer.py`
 
-## Milestone 2 — Metadata API
+## Milestone 2 — Metadata API (done)
 
 **Outcome:** Tag and fetch files without Flutter.
 
-- [ ] CRUD-ish file metadata endpoints
-- [ ] Tags + file_tags
-- [ ] Catalog delta endpoint (even if crude cursor)
-- [ ] Manual curl/httpie script in docs or `scripts/`
+- [x] CRUD-ish file metadata endpoints
+- [x] Tags + file_tags
+- [x] Catalog delta endpoint (even if crude cursor)
+- [x] Manual curl/httpie script in docs or `scripts/`
 
 **Exit check:** Tag a file via API; delta returns it.
 
-**E2E:** add `backend/tests/scenarios/test_metadata_api.py`.
+**E2E:** `backend/tests/scenarios/test_metadata_api.py`
 
 ## Milestone 3 — Flutter catalog (list-only)
 
@@ -159,3 +159,4 @@ Record important choices here as they happen.
 | 2026-07-30 | Backend scenario E2E first; Flutter E2E later | AI loops need phone-free pytest; device UI waits for list/pin |
 | 2026-07-30 | Blobs at `blobs/<algo>/<hh>/<hh>/<fullhash>`; collision = refuse overwrite | Fan-out for FS/GUI; algo prefix for API + migration; never silent CAS overwrite |
 | 2026-07-30 | Milestone 1: hash-in-place + BLAKE3 (uv) | Ship indexer without blob copy; blake3 via uv wheels, not Nix withPackages |
+| 2026-07-30 | Milestone 2: `(updated_at, file_id)` delta cursor `v1:…` | Crude changelog without extra table; tag edits bump `files.updated_at` |

@@ -31,9 +31,16 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+homesync_server = ["db/migrations/*.sql"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# FastAPI Depends() in Annotated aliases is fine; LOG015 is noisy for small CLIs.
+ignore = ["B008", "LOG015"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

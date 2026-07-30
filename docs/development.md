@@ -59,6 +59,9 @@ uv run homesync-server
 
 # Index a library folder (hash-in-place; uses $HOMESYNC_DATA)
 uv run homesync-index --root ~/Pictures --label Pictures
+
+# Metadata API smoke (daemon running; catalog indexed)
+../scripts/metadata_api_smoke.sh
 ```
 
 ### Layout
@@ -77,6 +80,7 @@ backend/
     models/               # SQLAlchemy catalog tables
     storage/              # hash (+ blob_path helper)
     indexer/              # walk library roots
+    api/ schemas/ services/
   tests/
     conftest.py           # temp HOMESYNC_DATA + TestClient fixtures
     test_health.py        # Milestone 0 smoke
@@ -96,10 +100,10 @@ As features land:
 ```text
 homesync_server/
   main.py              # app factory / router mount
-  api/                 # routes
-  models/              # SQLAlchemy
+  api/                 # routes (/v1/files, /v1/tags, /v1/catalog/delta)
   schemas/             # Pydantic
   services/            # catalog invariants
+  models/              # SQLAlchemy
   storage/             # hash, blob paths, atomic writes
   indexer/             # walk roots
 ```

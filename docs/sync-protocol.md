@@ -51,25 +51,22 @@ Store pairing secret / bearer token association when auth exists.
 GET /v1/catalog/delta?since=<cursor>&limit=500
 ```
 
-**Cursor** recommendations:
+**Cursor (v1 implemented):** opaque `v1:{updated_at}|{file_id}` ordered lexicographically by `(updated_at, file_id)`. Empty / omitted `since` = full scan from the beginning. Tag edits and metadata patches bump `files.updated_at` so they appear in subsequent deltas. A changelog table may replace this later without changing the opaque cursor namespace if we bump to `v2:…`.
 
-- Monotonic `catalog_changes.id` (changelog table), **or**
-- `(updated_at, file_id)` tuple carefully handled for equals.
-
-Response shape (illustrative):
+Response shape:
 
 ```json
 {
-  "next_cursor": "12345",
-  "files": [ { "file_id": "…", "content_hash": "…", "title": "…", "updated_at": "…", "deleted_at": null } ],
-  "tags": [ … ],
-  "file_tags": [ … ],
-  "availability": [ { "file_id": "…", "device_id": "…", "mode": "listed", "updated_at": "…" } ],
+  "next_cursor": "v1:2026-07-30T12:00:00.000001Z|…",
+  "files": [ { "file_id": "…", "content_hash": "…", "title": "…", "updated_at": "…", "deleted_at": null, "tags": ["family"] } ],
+  "tags": [ { "tag_id": "…", "name": "family", "color": null } ],
+  "file_tags": [ { "file_id": "…", "tag_id": "…" } ],
+  "availability": [],
   "paths": [ … ]
 }
 ```
 
-Phone applies transactions locally. Deleted files arrive with `deleted_at` set (tombstones), not silent omission forever—omission-only sync is harder to reason about.
+`availability` is empty until Milestone 4. Phone applies transactions locally. Deleted files arrive with `deleted_at` set (tombstones), not silent omission forever—omission-only sync is harder to reason about.
 
 ## Default availability for remote files
 
@@ -101,7 +98,11 @@ Do not treat step 1 alone as success in the UI.
 
 ## Metadata updates
 
+Implemented (Milestone 2):
+
 ```http
+GET /v1/files
+GET /v1/files/{file_id}
 PATCH /v1/files/{file_id}
 {
   "title": "…",
@@ -109,17 +110,15 @@ PATCH /v1/files/{file_id}
   "updated_at": "client-time",
   "base_updated_at": "last-seen-server-time"
 }
-```
-
-**LWW v1:** server accepts if `updated_at` (client) ≥ stored, or use `base_updated_at` to detect mid-air collision and return `409` with server row (client rebases). Pick one and document in code; prefer explicit `409` when easy.
-
-Tags:
-
-```http
+DELETE /v1/files/{file_id}   # soft-delete (sets deleted_at)
+GET /v1/tags
 PUT /v1/files/{file_id}/tags
 { "tags": ["family", "receipts"] }
 ```
 
+**LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
+
+Manual curl smoke: `scripts/metadata_api_smoke.sh` (daemon on `127.0.0.1:8787`, catalog already indexed).
 ## Availability updates
 
 ```http

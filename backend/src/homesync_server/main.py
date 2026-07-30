@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from homesync_server.api import api_router
 from homesync_server.config import data_root
 from homesync_server.db import bootstrap
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    bootstrap(data_root())
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _root, engine = bootstrap(data_root())
+    app.state.engine = engine
     yield
+    engine.dispose()
+    app.state.engine = None
 
 
 app = FastAPI(title="Homesync", version="0.1.0", lifespan=lifespan)
+app.include_router(api_router)
 
 
 @app.get("/health")
