@@ -134,6 +134,7 @@ See `docs/development.md` (Quality checks) and `AGENTS.md` (Testing).
 - EXIF-rich filters, maps, albums
 - Export tags to XMP
 - Read-only Web UI on PC
+- Linux evacuate / remote-only path: after ingest into blobs, unlink source; keep catalog listing + path attribute (host analog of phone listed)
 - CRDTs (only if LWW proves painful)
 
 ## Explicit non-goals (for now)
@@ -160,3 +161,4 @@ Record important choices here as they happen.
 | 2026-07-30 | Blobs at `blobs/<algo>/<hh>/<hh>/<fullhash>`; collision = refuse overwrite | Fan-out for FS/GUI; algo prefix for API + migration; never silent CAS overwrite |
 | 2026-07-30 | Milestone 1: hash-in-place + BLAKE3 (uv) | Ship indexer without blob copy; blake3 via uv wheels, not Nix withPackages |
 | 2026-07-30 | Milestone 2: `(updated_at, file_id)` delta cursor `v1:…` | Crude changelog without extra table; tag edits bump `files.updated_at` |
+| 2026-07-31 | Future host “send-and-remove” = catalog + path attr without bytes at that path | Host analog of phone listed; blobs remain SoT for content; deferred after mobile list/pin/ingest |

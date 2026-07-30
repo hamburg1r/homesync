@@ -113,6 +113,15 @@ The indexer should support **multiple roots** configured in DB or config, e.g.:
 
 Each ingest stamps `root_id` + relative path for human recovery, while identity remains `file_id`/hash.
 
+### Future: host evacuate / remote-only path (deferred)
+
+Same mental model as phone `listed`: catalog metadata yes, bytes at that path no.
+
+- A path in the catalog is an **attribute**, not a guarantee that bytes exist there on disk.
+- **Evacuate** = ensure content is in managed `blobs/`, keep the catalog row (and path attribute), then unlink the source path. Distinct from hash-in-place (file still under a library root).
+- Reopen/materialize from the blob store when needed. Soft-detect `gone_at` on indexer scans stays adjacent but is not the same as intentional evacuate.
+- Deferred until after phone list / pin / ingest; no new host tooling in v1.
+
 ## Blob store layout
 
 Managed content-addressed bytes live under `$HOMESYNC_DATA/blobs/` (never inside the git repo):
