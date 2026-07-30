@@ -56,6 +56,9 @@ cd backend
 uv sync --extra dev
 uv run homesync-server
 # → http://127.0.0.1:8787/health
+
+# Index a library folder (hash-in-place; uses $HOMESYNC_DATA)
+uv run homesync-index --root ~/Pictures --label Pictures
 ```
 
 ### Layout
@@ -67,7 +70,13 @@ backend/
   .venv/                  # gitignored; created by uv
   src/homesync_server/
     __init__.py
-    main.py               # FastAPI app entry
+    main.py               # FastAPI app entry (+ DB bootstrap on lifespan)
+    cli.py                # homesync-index
+    config.py             # HOMESYNC_DATA
+    db/                   # engine, migrations
+    models/               # SQLAlchemy catalog tables
+    storage/              # hash (+ blob_path helper)
+    indexer/              # walk library roots
   tests/
     conftest.py           # temp HOMESYNC_DATA + TestClient fixtures
     test_health.py        # Milestone 0 smoke

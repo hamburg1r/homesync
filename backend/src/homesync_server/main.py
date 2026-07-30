@@ -1,6 +1,23 @@
+"""Homesync FastAPI app entry."""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+
 from fastapi import FastAPI
 
-app = FastAPI(title="Homesync", version="0.1.0")
+from homesync_server.config import data_root
+from homesync_server.db import bootstrap
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    bootstrap(data_root())
+    yield
+
+
+app = FastAPI(title="Homesync", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

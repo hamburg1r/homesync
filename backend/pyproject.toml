@@ -11,6 +11,7 @@ dependencies = [
   "pydantic>=2.0",
   "python-multipart>=0.0.12",
   "httpx>=0.28",
+  "blake3>=1.0.9",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +22,7 @@ dev = [
 
 [project.scripts]
 homesync-server = "homesync_server.main:run"
+homesync-index = "homesync_server.cli:run_index"
 
 [build-system]
 requires = ["setuptools>=75"]

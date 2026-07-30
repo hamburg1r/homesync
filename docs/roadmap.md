@@ -29,19 +29,19 @@ flowchart LR
 
 **E2E:** `backend/tests/test_health.py`
 
-## Milestone 1 — Indexer on Linux
+## Milestone 1 — Indexer on Linux (done)
 
 **Outcome:** Point at a folder; SQLite fills with `file_id`, hash, paths, basic mime/size.
 
-- [ ] Data dir + SQLite bootstrap + `schema_version`
-- [ ] Content-addressed blob store **or** “hash in place” mode for first iteration  
+- [x] Data dir + SQLite bootstrap + `schema_version`
+- [x] Content-addressed blob store **or** “hash in place” mode for first iteration  
       Recommendation: start with **hash-in-place** (file stays in library root; DB stores hash+path), then optionally copy/dedup into `blobs/` for unmanaged sources.
-- [ ] Walk `library_roots`, compute hash, upsert `files` / `file_paths`
-- [ ] Soft-detect gone paths (`gone_at`)
+- [x] Walk `library_roots`, compute hash, upsert `files` / `file_paths`
+- [x] Soft-detect gone paths (`gone_at`)
 
 **Exit check:** CLI or logs show N files indexed; re-run is idempotent.
 
-**E2E:** add `backend/tests/scenarios/test_indexer.py` (fixture library → N files; re-run idempotent; gone paths soft-detected).
+**E2E:** `backend/tests/scenarios/test_indexer.py`
 
 ## Milestone 2 — Metadata API
 
@@ -158,3 +158,4 @@ Record important choices here as they happen.
 | 2026-07-30 | Avoid Nix `withPackages` for app deps | Prevents compiling SciPy/Pillow via Nix |
 | 2026-07-30 | Backend scenario E2E first; Flutter E2E later | AI loops need phone-free pytest; device UI waits for list/pin |
 | 2026-07-30 | Blobs at `blobs/<algo>/<hh>/<hh>/<fullhash>`; collision = refuse overwrite | Fan-out for FS/GUI; algo prefix for API + migration; never silent CAS overwrite |
+| 2026-07-30 | Milestone 1: hash-in-place + BLAKE3 (uv) | Ship indexer without blob copy; blake3 via uv wheels, not Nix withPackages |
