@@ -57,8 +57,11 @@ uv sync --extra dev
 uv run homesync-server
 # → http://127.0.0.1:8787/health
 
-# Index a library folder (hash-in-place; uses $HOMESYNC_DATA)
+# Index a library folder (hash-in-place; uses resolved data root)
 uv run homesync-index --root ~/Pictures --label Pictures
+
+# Move managed store to another disk (stop the daemon first)
+uv run homesync-migrate-data --to /mnt/your-hdd/homesync
 
 # Metadata API smoke (daemon running; catalog indexed)
 ../scripts/metadata_api_smoke.sh
@@ -75,7 +78,8 @@ backend/
     __init__.py
     main.py               # FastAPI app entry (+ DB bootstrap on lifespan)
     cli.py                # homesync-index
-    config.py             # HOMESYNC_DATA
+    config.py             # HOMESYNC_DATA / config.toml / data_root
+    migrate_data.py       # homesync-migrate-data
     db/                   # engine, migrations
     models/               # SQLAlchemy catalog tables
     storage/              # hash (+ blob_path helper)
@@ -84,6 +88,8 @@ backend/
   tests/
     conftest.py           # temp HOMESYNC_DATA + TestClient fixtures
     test_health.py        # Milestone 0 smoke
+    test_config.py        # data_dir resolution
+    test_migrate_data.py  # migrate CLI
     scenarios/            # roadmap exit-check E2E (grow with features)
 ```
 
@@ -141,15 +147,38 @@ lib/
 
 ## Data directories (local dev)
 
-Recommend a configurable `$HOMESYNC_DATA` (default e.g. `~/.local/share/homesync`):
+Managed store resolution (first match wins):
+
+1. `$HOMESYNC_DATA` (env; also what tests set)
+2. `data_dir` in `$HOMESYNC_CONFIG` or `$XDG_CONFIG_HOME/homesync/config.toml` (default `~/.config/homesync/config.toml`)
+3. `~/.local/share/homesync`
+
+Point the store at a large disk by creating a config once:
+
+```toml
+# ~/.config/homesync/config.toml
+data_dir = "/mnt/your-hdd/homesync"
+```
+
+Or migrate an existing store:
+
+```bash
+# Stop homesync-server first
+uv run homesync-migrate-data --to /mnt/your-hdd/homesync
+# Optional: --from ~/.local/share/homesync --delete-source --force
+```
+
+Layout under the resolved data root:
 
 ```text
-$HOMESYNC_DATA/
+<data_root>/
   catalog.sqlite
   blobs/<algo>/<hh>/<hh>/<fullhash>   # see docs/architecture.md
   thumbs/
   quarantine/                         # integrity rejects only
 ```
+
+Library folders (`homesync-index --root …`) are separate from this managed store — they can also live on the HDD.
 
 Do not store blobs inside the git repo. `data/` and `blobs/` are gitignored at repo root for accidental local runs.
 

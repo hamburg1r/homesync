@@ -23,6 +23,7 @@ dev = [
 [project.scripts]
 homesync-server = "homesync_server.main:run"
 homesync-index = "homesync_server.cli:run_index"
+homesync-migrate-data = "homesync_server.migrate_data:run_migrate"
 
 [build-system]
 requires = ["setuptools>=75"]

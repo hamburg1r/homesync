@@ -105,8 +105,10 @@ WhatsApp restore flow is a **required** motivating example—see `docs/sync-prot
 
 ### Storage layout (target)
 
+`$data_root` resolves as `$HOMESYNC_DATA` > `data_dir` in `~/.config/homesync/config.toml` (or `$HOMESYNC_CONFIG`) > `~/.local/share/homesync`. Use `homesync-migrate-data --to <path>` to copy an existing store and update the config.
+
 ```text
-$data_root/   # e.g. $HOMESYNC_DATA
+$data_root/   # managed store (catalog + blobs), not library roots
   catalog.sqlite
   blobs/
     <algo>/                 # e.g. blake3 (matches /v1/blobs/{algo}/{hash})
