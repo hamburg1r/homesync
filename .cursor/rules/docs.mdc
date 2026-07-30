@@ -1,0 +1,12 @@
+---
+description: Design docs are canonical — keep them honest
+globs: docs/**/*
+alwaysApply: false
+---
+
+# Docs
+
+- `docs/` describes intended system behavior; update when implementation diverges.
+- Prefer Mermaid for flows/ER diagrams.
+- Append roadmap decision log instead of rewriting history silently.
+- Cross-link `AGENTS.md` / README when adding a major new doc.

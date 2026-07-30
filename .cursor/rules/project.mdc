@@ -1,0 +1,16 @@
+---
+description: Homesync core product and agent constraints
+alwaysApply: true
+---
+
+# Homesync
+
+Catalog + selective materialization (not full-mirror sync).
+
+- Linux owns blobs; SQLite owns identity, tags, provenance, per-device availability.
+- Phone modes: `listed` | `cached` | `pinned`. Listed ≠ full bytes.
+- Identity: `file_id` + `content_hash`. Paths are attributes.
+- v1 conflicts: LWW metadata; never merge divergent blobs.
+- Soft deletes / tombstones; GC only when unreferenced.
+- Read `AGENTS.md` and `docs/` before changing architecture.
+- Do not commit unless asked. Do not expose daemon on hostile nets without auth.
