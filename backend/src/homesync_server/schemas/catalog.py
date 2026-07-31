@@ -61,3 +61,17 @@ class CatalogDeltaOut(BaseModel):
     file_tags: list[FileTagOut]
     paths: list[FilePathOut]
     availability: list[dict[str, object]] = Field(default_factory=list)
+
+
+class DeviceIn(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=36)
+    name: str = Field(..., min_length=1)
+    kind: str = Field(..., min_length=1)
+
+
+class DeviceOut(BaseModel):
+    device_id: str
+    name: str
+    kind: str
+    created_at: str
+    last_seen_at: str | None

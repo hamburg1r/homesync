@@ -2,6 +2,8 @@
 
 from homesync_server.schemas.catalog import (
     CatalogDeltaOut,
+    DeviceIn,
+    DeviceOut,
     FileOut,
     FilePatchIn,
     FilePathOut,
@@ -12,6 +14,8 @@ from homesync_server.schemas.catalog import (
 
 __all__ = [
     "CatalogDeltaOut",
+    "DeviceIn",
+    "DeviceOut",
     "FileOut",
     "FilePatchIn",
     "FilePathOut",

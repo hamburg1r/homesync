@@ -56,18 +56,18 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_metadata_api.py`
 
-## Milestone 3 — Flutter catalog (list-only)
+## Milestone 3 — Flutter catalog (list-only) (done)
 
 **Outcome:** Phone shows names/types/sizes/tags from API; opening full file is not required.
 
-- [ ] API client + device registration
-- [ ] Local SQLite mirror of catalog subset
-- [ ] Browse UI + pull-to-refresh / delta sync
-- [ ] Explicit empty/error/degraded states
+- [x] API client + device registration
+- [x] Local SQLite mirror of catalog subset
+- [x] Browse UI + pull-to-refresh / delta sync
+- [x] Explicit empty/error/degraded states
 
 **Exit check:** Phone lists PC files while online; survives app restart with local catalog.
 
-**E2E:** backend still covers catalog list/delta as the phone would call them (extend metadata/delta scenarios). Flutter device E2E stays deferred.
+**E2E:** `backend/tests/scenarios/test_phone_catalog.py`. Flutter: `mobile/test/scenarios/phone_catalog_test.dart` (+ cubit/browse). Device E2E deferred.
 
 ## Milestone 4 — Pin + materialize
 
@@ -116,12 +116,21 @@ flowchart LR
 
 ## Testing / AI guardrails
 
-Backend scenario E2E is the primary AI-proof loop: isolated temp `$HOMESYNC_DATA`, FastAPI `TestClient`, no phone required.
+Two phone-free loops:
+
+**Backend** — isolated temp `$HOMESYNC_DATA`, FastAPI `TestClient`:
 
 1. Implement a roadmap exit check.
-2. Add or update the matching file under `backend/tests/scenarios/` (do not leave green “done” without the scenario).
+2. Add/update `backend/tests/scenarios/test_*.py`.
 3. Run `cd backend && uv sync --extra dev && uv run pytest`.
-4. Do not skip or delete failing exit-check tests to “finish” a milestone.
+
+**Mobile** (when changing `mobile/`) — Drift memory + MockClient:
+
+1. Implement the client-side exit check.
+2. Add/update `mobile/test/scenarios/*_test.dart`.
+3. Run `nix develop .#mobile --command ./scripts/mobile_check.sh`.
+
+Do not skip or delete failing exit-check tests to “finish” a milestone. Device/Maestro E2E remains Later.
 
 See `docs/development.md` (Quality checks) and `AGENTS.md` (Testing).
 
@@ -162,3 +171,7 @@ Record important choices here as they happen.
 | 2026-07-30 | Milestone 1: hash-in-place + BLAKE3 (uv) | Ship indexer without blob copy; blake3 via uv wheels, not Nix withPackages |
 | 2026-07-30 | Milestone 2: `(updated_at, file_id)` delta cursor `v1:…` | Crude changelog without extra table; tag edits bump `files.updated_at` |
 | 2026-07-31 | Future host “send-and-remove” = catalog + path attr without bytes at that path | Host analog of phone listed; blobs remain SoT for content; deferred after mobile list/pin/ingest |
+| 2026-07-31 | Milestone 3: Flutter list-only + `POST /v1/devices`; local sqflite mirror | Catalog delta → phone DB; listed UI without blob open; pin/materialize is M4 |
+| 2026-07-31 | Phone catalog mirror: Drift (SQLite) + Bloc/Cubit; not Riverpod; blobs stay on filesystem | Typed migrations + watch queries before M4 availability; Cubit for sync UI states |
+| 2026-07-31 | Mobile foundation: feature-first flatter layout; get_it/injectable; freezed DTOs; logger; http not dio; codegen gitignored | Small-app stack; audit logs; agents run build_runner via mobile_check.sh |
+| 2026-07-31 | Flutter phone-free scenarios co-equal for `mobile/` changes | Mirror backend pytest guardrail without requiring a device |

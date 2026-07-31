@@ -128,23 +128,40 @@ flutter run
 
 - Target **Android only**.
 - App id / org used at create time: `com.homesync` / `homesync_mobile`.
+- Default API base URL on emulator: `http://10.0.2.2:8787` (change in-app Settings for a physical device / Tailscale IP).
+- Cleartext HTTP is allowed for LAN/VPN until auth + TLS land.
+- First launch: register device via `POST /v1/devices`, pull `/v1/catalog/delta` into on-device **Drift** SQLite (`homesync_catalog_v2`); pull-to-refresh re-syncs. Listings are **metadata only** (`listed`).
+- Stack: **Drift**, **Bloc/Cubit**, **get_it + injectable**, **freezed** DTOs, **`package:http`**, **`logger`** (`AppLog`). Not Riverpod / Dio / sqflite.
+- Catalog `title` is display-only; may differ from PC path and from future on-device pin filenames (hash paths).
 
-### Suggested Flutter structure (when you leave the counter demo)
+### Flutter structure
 
 ```text
 lib/
   main.dart
-  app.dart
+  app/                 # HomesyncApp, injectable DI
+  core/                # AppLog, AppException
   features/
     catalog/
-    pins/
-    tags/
-  data/
-    api/
-    local_db/
-    sync/
+      data/            # API, Drift, sync
+      presentation/    # CatalogCubit + browse UI
+    settings/
+      data/
+      presentation/
+test/
+  flutter_test_config.dart
+  support/fixtures.dart
+  scenarios/           # roadmap-named phone-free exit checks
+  widget/
 ```
 
+Codegen is gitignored. Always:
+
+```bash
+nix develop .#mobile --command ./scripts/mobile_check.sh
+# = flutter pub get && build_runner && analyze && test
+# needs libsqlite3 (shell sets HOMESYNC_SQLITE3_LIB)
+```
 ## Data directories (local dev)
 
 Managed store resolution (first match wins):
@@ -202,15 +219,22 @@ uv run pytest
 
 Naming maps to roadmap exit checks (`test_indexer.py`, `test_metadata_api.py`, `test_pin_materialize.py`, …). Do **not** stub failing placeholders for unfinished milestones — add the scenario when the feature lands.
 
-Flutter / device E2E (`integration_test` or Maestro) is deferred until list + pin UI exists; do not block backend work on an emulator.
+Flutter / device E2E (`integration_test` or Maestro) is deferred; do not block backend work on an emulator.
 
-### Mobile
+### Mobile scenario E2E
+
+Phone-free Flutter guardrail (Drift in-memory + MockClient). Same spirit as backend scenarios.
 
 ```bash
-cd mobile
-flutter analyze
-flutter test
+nix develop .#mobile --command ./scripts/mobile_check.sh
 ```
+
+| Kind | Path | When to add |
+|---|---|---|
+| Exit-check scenarios | `mobile/test/scenarios/*_test.dart` | With each mobile roadmap exit check |
+| Presentational widgets | `mobile/test/widget/` | Thin UI state smoke |
+
+Naming maps to roadmap (`phone_catalog_test.dart`, later `pin_materialize_test.dart`, …). Flutter requires the `*_test.dart` suffix. Do **not** stub failing placeholders for unfinished milestones. Codegen must be generated locally (not in VCS).
 
 ## Editing the flake
 

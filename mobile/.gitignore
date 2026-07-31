@@ -33,6 +33,11 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Codegen — regenerate with: dart run build_runner build
+*.g.dart
+*.freezed.dart
+*.config.dart
+
 # Symbolication related
 app.*.symbols
 

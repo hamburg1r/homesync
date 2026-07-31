@@ -120,12 +120,16 @@
 					pkgs.unzip
 					pkgs.curl
 					pkgs.nmap
+					pkgs.sqlite # Drift NativeDatabase / flutter test needs libsqlite3
 					connectadb
 					installdeps
 				];
 				shellHook = ''
 					echo "homesync mobile (Flutter)"
 					${androidPathHook}
+					# Expose libsqlite3 for Drift/sqlite3 FFI in `flutter test`
+					export LD_LIBRARY_PATH="${pkgs.sqlite.out}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+					export HOMESYNC_SQLITE3_LIB="${pkgs.sqlite.out}/lib/libsqlite3.so"
 				'';
 			};
 		in {

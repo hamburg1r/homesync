@@ -34,16 +34,22 @@ sequenceDiagram
 
 ## Device registration
 
+Implemented (Milestone 3):
+
 ```http
 POST /v1/devices
 {
-  "device_id": "…",          // client-generated UUID, stable across reinstalls if possible
+  "device_id": "…",          // client-generated UUID
   "name": "pixel-8",
-  "kind": "android"
+  "kind": "android"          // linux | android | other
 }
+
+GET /v1/devices/{device_id}
 ```
 
-Store pairing secret / bearer token association when auth exists.
+`POST` upserts by `device_id` and refreshes `last_seen_at`. Store pairing secret / bearer token association when auth exists.
+
+**Phone today:** UUID v4 stored in app prefs — stable across restarts, **not** across reinstalls / cleared app data.
 
 ## Catalog delta
 

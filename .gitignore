@@ -41,6 +41,10 @@ mobile/ios/Flutter/Flutter.framework
 mobile/ios/Flutter/Flutter.podspec
 mobile/**/Generated.xcconfig
 mobile/**/flutter_export_environment.sh
+# Codegen (run build_runner via scripts/mobile_check.sh)
+mobile/**/*.g.dart
+mobile/**/*.freezed.dart
+mobile/**/*.config.dart
 
 # IDE / OS / editor agent rules (local only)
 .cursor/
@@ -50,9 +54,9 @@ mobile/**/flutter_export_environment.sh
 *~
 .DS_Store
 
-# Local data / secrets
+# Local data / secrets (repo-root managed store only — not mobile/lib/data)
 .env
 .env.local
-data/
+/data/
 blobs/
 *.log

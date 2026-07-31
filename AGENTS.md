@@ -182,14 +182,17 @@ flutter run
 
 ### Flutter / Dart
 
-- Keep UI dumb; put sync/catalog logic in dedicated services/repositories.
+- Keep UI dumb; put sync/catalog logic in `features/*/data` + Cubits in `presentation`.
 - Respect availability: UI must render `listed` items without attempting full-file open unless user requests materialization.
+- Display `title` may differ from PC path basename and from on-device pin path (hash-addressed).
+- Codegen (`*.g.dart`, `*.freezed.dart`) is **not** in git — run `build_runner` via `scripts/mobile_check.sh`.
 
 ### Testing
 
-- **Primary AI guardrail:** backend scenario E2E under `backend/tests/` (FastAPI `TestClient`, temp `$HOMESYNC_DATA`). After implementing a roadmap exit check, add/update the matching `tests/scenarios/…` module and run `uv sync --extra dev && uv run pytest`. Do not mark a milestone done without that scenario.
-- Prefer catalog invariants (hash identity, soft delete, availability transitions) and API scenarios over UI snapshot spam.
-- Don’t require a phone to unit-test backend catalog logic. Flutter `integration_test` / Maestro is deferred until list + pin UI exists; never block catalog/API work on emulator tests.
+- **Backend AI guardrail:** scenario E2E under `backend/tests/` (FastAPI `TestClient`, temp `$HOMESYNC_DATA`). After implementing a roadmap exit check, add/update the matching `tests/scenarios/…` module and run `uv sync --extra dev && uv run pytest`. Do not mark a milestone done without that scenario.
+- **Mobile AI guardrail (when changing `mobile/`):** phone-free scenarios under `mobile/test/scenarios/` (`*_test.dart`, named like roadmap exit checks). Run `nix develop .#mobile --command ./scripts/mobile_check.sh` (pub get → build_runner → analyze → test). Do not mark a mobile exit check done without the scenario.
+- Prefer catalog invariants (hash identity, soft delete, availability transitions) and API/client scenarios over UI snapshot spam.
+- Don’t require a phone for backend or Flutter unit/scenario tests. Flutter `integration_test` / Maestro stays deferred; never block catalog/API work on emulator tests.
 - Do not skip or delete failing exit-check scenarios to greenwash a change.
 
 ---
