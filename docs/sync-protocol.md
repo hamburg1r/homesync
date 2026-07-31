@@ -51,6 +51,8 @@ GET /v1/devices/{device_id}
 
 **Phone today:** UUID v4 stored in app prefs — stable across restarts, **not** across reinstalls / cleared app data.
 
+**Later / future:** UI to **pick among known devices** (list registered devices from the server, bind the phone to an existing `device_id` after reinstall, or reset to a new identity). May need `GET /v1/devices` (or equivalent) plus care for availability/pin rows keyed by device. Not required for list-only / pin v1.
+
 ## Catalog delta
 
 ```http

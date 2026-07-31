@@ -138,6 +138,7 @@ See `docs/development.md` (Quality checks) and `AGENTS.md` (Testing).
 
 - Flutter `integration_test` or Maestro: browse → pin → airplane-mode open (after Milestone 3–4 UI)
 - Multi-device phones
+- **Pick among known devices** on the phone (list server `devices`, reclaim/`device_id` after reinstall, or reset to a new identity) — see `docs/sync-protocol.md` Device registration
 - Auth tokens + NixOS module systemd service
 - Hash-dedup blob migration tooling
 - EXIF-rich filters, maps, albums
