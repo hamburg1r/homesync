@@ -56,6 +56,7 @@ cd backend
 uv sync --extra dev
 uv run homesync-server
 # → http://127.0.0.1:8787/health
+# Phone / LAN: HOMESYNC_HOST=0.0.0.0 uv run homesync-server  (no auth yet; LAN/VPN only)
 
 # Index a library folder (hash-in-place; uses resolved data root)
 uv run homesync-index --root ~/Pictures --label Pictures
