@@ -66,6 +66,30 @@ class CatalogSync {
     return _inFlight!;
   }
 
+  /// Bind this install to [deviceId], clear stale local availability, full re-sync.
+  Future<SyncResult> reclaimDevice(String deviceId) async {
+    final old = identity.currentDeviceId;
+    if (old != null && old != deviceId.trim()) {
+      await repository.clearAvailabilityForDevice(old);
+    }
+    await identity.reclaim(deviceId);
+    await repository.clearDeltaCursor();
+    log.info('sync', 'reclaim device → ${deviceId.trim()}; full catalog pull');
+    return sync();
+  }
+
+  /// Mint a new device UUID on this install and re-register + sync.
+  Future<SyncResult> resetDeviceIdentity() async {
+    final old = identity.currentDeviceId;
+    if (old != null) {
+      await repository.clearAvailabilityForDevice(old);
+    }
+    final id = await identity.resetToNew();
+    await repository.clearDeltaCursor();
+    log.info('sync', 'reset device → $id; full catalog pull');
+    return sync();
+  }
+
   Future<SyncResult> _doSync({
     required int pageLimit,
     IngestProgressCallback? onIngestProgress,

@@ -26,6 +26,10 @@ class CatalogPage extends StatelessWidget {
         settings: settings,
         tracking: getIt<TrackingRepository>(),
         onRulesChanged: () => cubit.onRulesChanged(),
+        currentDeviceId: cubit.currentDeviceId,
+        onListDevices: cubit.listServerDevices,
+        onReclaimDevice: cubit.reclaimDeviceId,
+        onResetDevice: cubit.resetDeviceId,
       ),
     );
     if (changed == true) {

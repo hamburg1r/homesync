@@ -179,6 +179,7 @@ class TestCatalogHarness {
     required this.repository,
     required this.api,
     required this.sync,
+    required this.identity,
     required this.blobs,
     required this.thumbs,
     required this.pinService,
@@ -198,6 +199,7 @@ class TestCatalogHarness {
   final CatalogRepository repository;
   final HomesyncApi api;
   final CatalogSync sync;
+  final DeviceIdentity identity;
   final LocalBlobStore blobs;
   final LocalThumbStore thumbs;
   final PinService pinService;
@@ -272,6 +274,7 @@ class TestCatalogHarness {
       repository: repository,
       api: api,
       sync: sync,
+      identity: identity,
       blobs: blobs,
       thumbs: thumbs,
       pinService: pinService,

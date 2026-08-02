@@ -42,6 +42,19 @@ class CatalogRepository {
         );
   }
 
+  Future<void> clearDeltaCursor() async {
+    await (_db.delete(_db.syncMetaEntries)
+          ..where((t) => t.key.equals(_deltaCursorKey)))
+        .go();
+  }
+
+  /// Drop local availability rows for a device (after reclaim / reset).
+  Future<void> clearAvailabilityForDevice(String deviceId) async {
+    await (_db.delete(_db.catalogAvailability)
+          ..where((a) => a.deviceId.equals(deviceId)))
+        .go();
+  }
+
   Future<void> applyDelta(CatalogDelta delta) async {
     final deviceId = await _identity.ensureDeviceId();
     await _db.transaction(() async {

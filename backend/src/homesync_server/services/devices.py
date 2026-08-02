@@ -63,3 +63,12 @@ def register_device(
 
 def get_device(session: Session, device_id: str) -> Device | None:
     return session.scalars(select(Device).where(Device.device_id == device_id)).first()
+
+
+def list_devices(session: Session) -> list[Device]:
+    """All registered devices, newest ``last_seen_at`` first."""
+    return list(
+        session.scalars(
+            select(Device).order_by(Device.last_seen_at.desc(), Device.device_id)
+        ).all()
+    )

@@ -1,5 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_pattern.dart';
@@ -11,11 +13,19 @@ class SettingsSheet extends StatefulWidget {
     required this.settings,
     required this.tracking,
     this.onRulesChanged,
+    this.currentDeviceId,
+    this.onListDevices,
+    this.onReclaimDevice,
+    this.onResetDevice,
   });
 
   final SettingsStore settings;
   final TrackingRepository tracking;
   final VoidCallback? onRulesChanged;
+  final String? currentDeviceId;
+  final Future<List<DeviceInfo>> Function()? onListDevices;
+  final Future<String?> Function(String deviceId)? onReclaimDevice;
+  final Future<String?> Function()? onResetDevice;
 
   @override
   State<SettingsSheet> createState() => _SettingsSheetState();
@@ -139,6 +149,81 @@ class _SettingsSheetState extends State<SettingsSheet> {
     await _reloadRules();
   }
 
+  Future<void> _reclaimDevice() async {
+    final listFn = widget.onListDevices;
+    final reclaimFn = widget.onReclaimDevice;
+    if (listFn == null || reclaimFn == null) return;
+
+    List<DeviceInfo> devices;
+    try {
+      devices = await listFn();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not list devices: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (context) => _ReclaimDeviceDialog(
+        devices: devices,
+        currentDeviceId: widget.currentDeviceId,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+
+    final err = await reclaimFn(chosen);
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Reclaimed device $chosen')),
+    );
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _resetDevice() async {
+    final resetFn = widget.onResetDevice;
+    if (resetFn == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset device identity?'),
+        content: const Text(
+          'This phone will get a new device ID. Previous availability '
+          'rows on the PC stay under the old ID. Prefer Reclaim if you '
+          'reinstalled and still have the old ID on the server.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final err = await resetFn();
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('New device identity registered')),
+    );
+    Navigator.of(context).pop(true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
@@ -181,6 +266,57 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 border: OutlineInputBorder(),
               ),
             ),
+            if (widget.onListDevices != null &&
+                widget.onReclaimDevice != null) ...[
+              const SizedBox(height: 16),
+              Text('Device ID', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(
+                'Survives app restarts but not reinstalls. Reclaim a known '
+                'server device after wipe, or reset to a new identity.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                widget.currentDeviceId ?? '(not registered yet)',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _reclaimDevice,
+                    icon: const Icon(Icons.devices_other),
+                    label: const Text('Reclaim device'),
+                  ),
+                  if (widget.onResetDevice != null)
+                    OutlinedButton.icon(
+                      onPressed: _resetDevice,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reset identity'),
+                    ),
+                  if (widget.currentDeviceId != null)
+                    IconButton(
+                      tooltip: 'Copy device ID',
+                      onPressed: () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        await Clipboard.setData(
+                          ClipboardData(text: widget.currentDeviceId!),
+                        );
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(content: Text('Device ID copied')),
+                        );
+                      },
+                      icon: const Icon(Icons.copy),
+                    ),
+                ],
+              ),
+            ],
             const SizedBox(height: 16),
             FilledButton(onPressed: _save, child: const Text('Save & sync')),
             const Divider(height: 32),
@@ -476,6 +612,120 @@ class _AddRuleDialogState extends State<_AddRuleDialog> {
             );
           },
           child: const Text('Add'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReclaimDeviceDialog extends StatefulWidget {
+  const _ReclaimDeviceDialog({
+    required this.devices,
+    this.currentDeviceId,
+  });
+
+  final List<DeviceInfo> devices;
+  final String? currentDeviceId;
+
+  @override
+  State<_ReclaimDeviceDialog> createState() => _ReclaimDeviceDialogState();
+}
+
+class _ReclaimDeviceDialogState extends State<_ReclaimDeviceDialog> {
+  String? _selected;
+  late final TextEditingController _manual;
+
+  @override
+  void initState() {
+    super.initState();
+    _manual = TextEditingController();
+    final android = widget.devices.where((d) => d.kind == 'android').toList();
+    final prefer = android.isNotEmpty ? android : widget.devices;
+    if (prefer.isNotEmpty) {
+      _selected = prefer.first.deviceId;
+    }
+  }
+
+  @override
+  void dispose() {
+    _manual.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Reclaim device'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Pick a device already registered on the PC, or paste a '
+                'device ID (e.g. after reinstall).',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              if (widget.devices.isEmpty)
+                const Text('No devices on the server yet.')
+              else
+                ...widget.devices.map(
+                  (d) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    selected: _selected == d.deviceId,
+                    title: Text('${d.name} (${d.kind})'),
+                    subtitle: Text(
+                      d.deviceId,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: _selected == d.deviceId
+                        ? const Icon(Icons.check_circle)
+                        : const Icon(Icons.radio_button_unchecked),
+                    onTap: () => setState(() {
+                      _selected = d.deviceId;
+                      _manual.clear();
+                    }),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _manual,
+                decoration: const InputDecoration(
+                  labelText: 'Or paste device ID',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  if (v.trim().isNotEmpty) {
+                    setState(() => _selected = null);
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final manual = _manual.text.trim();
+            final id = manual.isNotEmpty ? manual : _selected;
+            if (id == null || id.isEmpty) return;
+            if (id == widget.currentDeviceId) {
+              Navigator.pop(context);
+              return;
+            }
+            Navigator.pop(context, id);
+          },
+          child: const Text('Reclaim'),
         ),
       ],
     );

@@ -41,6 +41,12 @@ def register_device(body: DeviceIn, session: SessionDep) -> DeviceOut:
     return _device_out(device)
 
 
+@router.get("/devices", response_model=list[DeviceOut])
+def list_devices(session: SessionDep) -> list[DeviceOut]:
+    """List registered devices (for phone reclaim-after-reinstall)."""
+    return [_device_out(d) for d in devices_svc.list_devices(session)]
+
+
 @router.get("/devices/{device_id}", response_model=DeviceOut)
 def get_device(device_id: str, session: SessionDep) -> DeviceOut:
     device = devices_svc.get_device(session, device_id)

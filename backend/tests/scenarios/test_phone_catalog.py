@@ -58,6 +58,11 @@ def test_device_register_and_catalog_delta_as_phone(
     missing = client.get(f"/v1/devices/{uuid4()}")
     assert missing.status_code == 404
 
+    listed = client.get("/v1/devices")
+    assert listed.status_code == 200
+    ids = {d["device_id"] for d in listed.json()}
+    assert device_id in ids
+
     bad_kind = client.post(
         "/v1/devices",
         json={"device_id": str(uuid4()), "name": "x", "kind": "toaster"},

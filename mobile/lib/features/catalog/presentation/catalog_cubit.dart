@@ -163,6 +163,64 @@ class CatalogCubit extends Cubit<CatalogState> {
     await refresh(showSpinnerWhenEmpty: true);
   }
 
+  String? get currentDeviceId => sync.identity.currentDeviceId;
+
+  Future<List<DeviceInfo>> listServerDevices() => api.listDevices();
+
+  Future<String?> reclaimDeviceId(String deviceId) async {
+    emit(state.copyWith(refreshing: true, clearStatusMessage: true));
+    try {
+      final result = await sync.reclaimDevice(deviceId);
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      if (!result.ok) {
+        final msg = result.error?.toString() ?? 'reclaim failed';
+        if (!isClosed) {
+          emit(state.copyWith(refreshing: false, statusMessage: msg));
+        }
+        return msg;
+      }
+      if (!isClosed) {
+        emit(state.copyWith(refreshing: false));
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'reclaim device failed: $e');
+      if (!isClosed) {
+        emit(state.copyWith(refreshing: false, statusMessage: e.toString()));
+      }
+      return e.toString();
+    }
+  }
+
+  Future<String?> resetDeviceId() async {
+    emit(state.copyWith(refreshing: true, clearStatusMessage: true));
+    try {
+      final result = await sync.resetDeviceIdentity();
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      if (!result.ok) {
+        final msg = result.error?.toString() ?? 'reset failed';
+        if (!isClosed) {
+          emit(state.copyWith(refreshing: false, statusMessage: msg));
+        }
+        return msg;
+      }
+      if (!isClosed) {
+        emit(state.copyWith(refreshing: false));
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'reset device failed: $e');
+      if (!isClosed) {
+        emit(state.copyWith(refreshing: false, statusMessage: e.toString()));
+      }
+      return e.toString();
+    }
+  }
+
   void _onCatalogFiles(List<CatalogFile> files) {
     _catalogFiles = files;
     if (isClosed) return;

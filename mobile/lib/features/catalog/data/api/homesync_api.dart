@@ -114,6 +114,24 @@ class HomesyncApi {
     return info;
   }
 
+  Future<List<DeviceInfo>> listDevices() async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'GET /v1/devices',
+      _client.get(_uri('/v1/devices')),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'list devices failed',
+        statusCode: response.statusCode,
+      );
+    }
+    final list = jsonDecode(response.body) as List<dynamic>;
+    return list
+        .map((e) => DeviceInfo.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<CatalogDelta> catalogDelta({
     String? since,
     int limit = 500,

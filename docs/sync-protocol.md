@@ -34,7 +34,7 @@ sequenceDiagram
 
 ## Device registration
 
-Implemented (Milestone 3):
+Implemented (Milestone 3 + reclaim):
 
 ```http
 POST /v1/devices
@@ -44,6 +44,7 @@ POST /v1/devices
   "kind": "android"          // linux | android | other
 }
 
+GET /v1/devices              # list registered devices (reclaim UI)
 GET /v1/devices/{device_id}
 ```
 
@@ -51,7 +52,7 @@ GET /v1/devices/{device_id}
 
 **Phone today:** UUID v4 stored in app prefs — stable across restarts, **not** across reinstalls / cleared app data.
 
-**Later / future:** UI to **pick among known devices** (list registered devices from the server, bind the phone to an existing `device_id` after reinstall, or reset to a new identity). May need `GET /v1/devices` (or equivalent) plus care for availability/pin rows keyed by device. Not required for list-only / pin v1.
+**Reclaim (Settings → Device ID):** list server devices (`GET /v1/devices`) or paste a known UUID; bind this install to that `device_id`, clear local availability for the previous id, reset the catalog cursor, re-register, and full-sync so pin rows for the reclaimed id apply. **Reset identity** mints a new UUID (old server rows remain under the abandoned id).
 
 ## Catalog delta
 
