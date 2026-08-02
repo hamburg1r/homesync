@@ -192,3 +192,4 @@ Record important choices here as they happen.
 | 2026-08-03 | Keep on PC only = listed + delete all local copies (CAS / custom / origin) | Clear “remove from device, retain PC”; replaces vague Unpin for user-facing |
 | 2026-08-03 | PC→phone materialize path: settings default + per-download folder/name | Was app-only `homesync_pins`; users need Downloads-style destinations |
 | 2026-08-03 | Device reclaim: `GET /v1/devices` + Settings reclaim/reset | Survive reinstall without orphaning availability keyed by device_id |
+| 2026-08-03 | Settings sheet wraps content in SafeArea | Full-height modal collided with status/notification bar |

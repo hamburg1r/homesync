@@ -227,14 +227,15 @@ class _SettingsSheetState extends State<SettingsSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.viewInsetsOf(context).bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(24, 16, 24, 24 + bottom),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Server', style: Theme.of(context).textTheme.titleLarge),
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(24, 16, 24, 24 + bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Server', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
               'Emulator default is 10.0.2.2 (host loopback). '
@@ -486,6 +487,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
