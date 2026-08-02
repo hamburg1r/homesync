@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -6,6 +8,7 @@ import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:injectable/injectable.dart';
 
 enum CatalogViewState { loading, empty, ready, error, degraded }
@@ -16,12 +19,14 @@ final class CatalogState extends Equatable {
     this.files = const [],
     this.statusMessage,
     this.refreshing = false,
+    this.busyFileId,
   });
 
   final CatalogViewState viewState;
   final List<CatalogFile> files;
   final String? statusMessage;
   final bool refreshing;
+  final String? busyFileId;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -29,6 +34,8 @@ final class CatalogState extends Equatable {
     String? statusMessage,
     bool clearStatusMessage = false,
     bool? refreshing,
+    String? busyFileId,
+    bool clearBusyFileId = false,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -36,19 +43,22 @@ final class CatalogState extends Equatable {
       statusMessage:
           clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
       refreshing: refreshing ?? this.refreshing,
+      busyFileId: clearBusyFileId ? null : (busyFileId ?? this.busyFileId),
     );
   }
 
   @override
-  List<Object?> get props => [viewState, files, statusMessage, refreshing];
+  List<Object?> get props =>
+      [viewState, files, statusMessage, refreshing, busyFileId];
 }
 
-/// Catalog UI state: watches local Drift rows + drives delta refresh.
+/// Catalog UI state: watches local Drift rows + drives delta refresh / pin.
 @injectable
 class CatalogCubit extends Cubit<CatalogState> {
   CatalogCubit({
     required this.repository,
     required this.sync,
+    required this.pinService,
     required this.log,
   }) : super(const CatalogState()) {
     _filesSub = repository.watchActiveFiles().listen(_onFiles);
@@ -56,6 +66,7 @@ class CatalogCubit extends Cubit<CatalogState> {
 
   final CatalogRepository repository;
   final CatalogSync sync;
+  final PinService pinService;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
   bool _started = false;
@@ -128,6 +139,82 @@ class CatalogCubit extends Cubit<CatalogState> {
         ),
       );
     }
+  }
+
+  Future<String?> pinFile(String fileId) async {
+    emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
+    try {
+      await pinService.pin(fileId);
+      final files = await repository.listActiveFiles();
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            files: files,
+            clearBusyFileId: true,
+            viewState: files.isEmpty
+                ? CatalogViewState.empty
+                : CatalogViewState.ready,
+          ),
+        );
+      }
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'pin failed: $e');
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            clearBusyFileId: true,
+            statusMessage: e.toString(),
+          ),
+        );
+      }
+      return e.toString();
+    }
+  }
+
+  Future<String?> unpinFile(String fileId) async {
+    emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
+    try {
+      await pinService.unpin(fileId);
+      final files = await repository.listActiveFiles();
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            files: files,
+            clearBusyFileId: true,
+            viewState: files.isEmpty
+                ? CatalogViewState.empty
+                : CatalogViewState.ready,
+          ),
+        );
+      }
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'unpin failed: $e');
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            clearBusyFileId: true,
+            statusMessage: e.toString(),
+          ),
+        );
+      }
+      return e.toString();
+    }
+  }
+
+  /// Returns local bytes when materialised; null if listed-only / missing.
+  Future<Uint8List?> openLocalBytes(CatalogFile file) {
+    return pinService.openLocalBytes(file);
+  }
+
+  /// Convenience: decode UTF-8 text preview when bytes are present.
+  Future<String?> openLocalTextPreview(CatalogFile file, {int maxChars = 4000}) async {
+    final bytes = await openLocalBytes(file);
+    if (bytes == null) return null;
+    final text = utf8.decode(bytes, allowMalformed: true);
+    if (text.length <= maxChars) return text;
+    return '${text.substring(0, maxChars)}…';
   }
 
   @override

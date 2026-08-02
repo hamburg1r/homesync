@@ -54,13 +54,26 @@ class FileTagsPutIn(BaseModel):
     tags: list[str]
 
 
+class AvailabilityOut(BaseModel):
+    file_id: str
+    device_id: str
+    mode: str
+    updated_at: str
+
+
+class AvailabilityPutIn(BaseModel):
+    mode: str = Field(..., min_length=1)
+    updated_at: str | None = None
+    base_updated_at: str | None = None
+
+
 class CatalogDeltaOut(BaseModel):
     next_cursor: str
     files: list[FileOut]
     tags: list[TagOut]
     file_tags: list[FileTagOut]
     paths: list[FilePathOut]
-    availability: list[dict[str, object]] = Field(default_factory=list)
+    availability: list[AvailabilityOut] = Field(default_factory=list)
 
 
 class DeviceIn(BaseModel):

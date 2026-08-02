@@ -30,30 +30,88 @@ class CatalogPage extends StatelessWidget {
           state: state.viewState,
           files: state.files,
           statusMessage: state.statusMessage,
+          busyFileId: state.busyFileId,
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
+          onPin: (file) => context.read<CatalogCubit>().pinFile(file.fileId),
+          onUnpin: (file) => context.read<CatalogCubit>().unpinFile(file.fileId),
+          onOpen: (file) => _openFile(context, file),
         );
       },
     );
   }
+
+  Future<void> _openFile(BuildContext context, CatalogFile file) async {
+    final cubit = context.read<CatalogCubit>();
+    if (!file.hasLocalBytes) {
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(file.displayName),
+          content: const Text(
+            'This file is listed only — no bytes on this device. '
+            'Pin it to download from the PC.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final preview = await cubit.openLocalTextPreview(file);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(file.displayName),
+        content: SingleChildScrollView(
+          child: Text(
+            preview ??
+                'Pinned locally (${_formatBytes(file.sizeBytes)}). '
+                    'Binary preview not shown.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-/// Presentational catalog browse UI (list-only; no blob open).
+/// Presentational catalog browse UI (list + pin affordance).
 class CatalogBrowseView extends StatelessWidget {
   const CatalogBrowseView({
     super.key,
     required this.state,
     required this.files,
     this.statusMessage,
+    this.busyFileId,
     this.onRefresh,
     this.onOpenSettings,
+    this.onPin,
+    this.onUnpin,
+    this.onOpen,
   });
 
   final CatalogViewState state;
   final List<CatalogFile> files;
   final String? statusMessage;
+  final String? busyFileId;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
+  final Future<String?> Function(CatalogFile file)? onPin;
+  final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<void> Function(CatalogFile file)? onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -117,7 +175,7 @@ class CatalogBrowseView extends StatelessWidget {
                   title: 'No files yet',
                   subtitle:
                       'Index a library on the PC, then pull to refresh. '
-                      'Listings are metadata-only — opening full files is not required.',
+                      'Listed items are metadata-only until you pin them.',
                   actionLabel: 'Sync now',
                   onAction: onRefresh == null ? null : () => onRefresh!(),
                 ),
@@ -135,7 +193,13 @@ class CatalogBrowseView extends StatelessWidget {
             separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final file = files[index];
-              return _FileTile(file: file);
+              return _FileTile(
+                file: file,
+                busy: busyFileId == file.fileId,
+                onPin: onPin,
+                onUnpin: onUnpin,
+                onOpen: onOpen,
+              );
             },
           ),
         );
@@ -144,9 +208,19 @@ class CatalogBrowseView extends StatelessWidget {
 }
 
 class _FileTile extends StatelessWidget {
-  const _FileTile({required this.file});
+  const _FileTile({
+    required this.file,
+    required this.busy,
+    this.onPin,
+    this.onUnpin,
+    this.onOpen,
+  });
 
   final CatalogFile file;
+  final bool busy;
+  final Future<String?> Function(CatalogFile file)? onPin;
+  final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<void> Function(CatalogFile file)? onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -154,25 +228,41 @@ class _FileTile extends StatelessWidget {
     final typeLabel = file.mimeType ?? 'unknown type';
     final sizeLabel = _formatBytes(file.sizeBytes);
     final tags = file.tags.isEmpty ? 'no tags' : file.tags.join(', ');
+    final modeLabel = file.availabilityMode.wire;
+    final chipColor = file.isPinned
+        ? theme.colorScheme.primaryContainer
+        : theme.colorScheme.surfaceContainerHighest;
 
     return ListTile(
-      leading: Icon(
-        _iconForMime(file.mimeType),
-        color: theme.colorScheme.primary,
-      ),
+      leading: busy
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              _iconForMime(file.mimeType),
+              color: theme.colorScheme.primary,
+            ),
       title: Text(file.displayName),
       subtitle: Text('$typeLabel · $sizeLabel · $tags'),
       isThreeLine: true,
       trailing: Chip(
-        label: const Text('listed'),
+        label: Text(modeLabel),
         visualDensity: VisualDensity.compact,
         side: BorderSide(color: theme.colorScheme.outlineVariant),
-        backgroundColor: theme.colorScheme.surfaceContainerHighest,
+        backgroundColor: chipColor,
       ),
       onTap: () {
         showModalBottomSheet<void>(
           context: context,
-          builder: (context) => _FileDetailSheet(file: file),
+          builder: (sheetContext) => _FileDetailSheet(
+            file: file,
+            busy: busy,
+            onPin: onPin,
+            onUnpin: onUnpin,
+            onOpen: onOpen,
+          ),
         );
       },
     );
@@ -180,9 +270,19 @@ class _FileTile extends StatelessWidget {
 }
 
 class _FileDetailSheet extends StatelessWidget {
-  const _FileDetailSheet({required this.file});
+  const _FileDetailSheet({
+    required this.file,
+    required this.busy,
+    this.onPin,
+    this.onUnpin,
+    this.onOpen,
+  });
 
   final CatalogFile file;
+  final bool busy;
+  final Future<String?> Function(CatalogFile file)? onPin;
+  final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<void> Function(CatalogFile file)? onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -194,17 +294,72 @@ class _FileDetailSheet extends StatelessWidget {
         children: [
           Text(file.displayName, style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),
-          const Text('Availability: listed (metadata only)'),
+          Text('Availability: ${file.availabilityMode.wire}'
+              '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'),
           Text('Type: ${file.mimeType ?? "unknown"}'),
           Text('Size: ${_formatBytes(file.sizeBytes)}'),
           Text('Hash: ${file.hashAlgo}:${file.contentHash}'),
           if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
           if (file.notes != null && file.notes!.isNotEmpty)
             Text('Notes: ${file.notes}'),
-          const SizedBox(height: 12),
-          Text(
-            'Full file open / pin download lands in a later milestone.',
-            style: Theme.of(context).textTheme.bodySmall,
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (file.hasLocalBytes && onOpen != null)
+                FilledButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          Navigator.pop(context);
+                          await onOpen!(file);
+                        },
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Open'),
+                ),
+              if (!file.isPinned && onPin != null)
+                FilledButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final err = await onPin!(file);
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                            if (err != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(err)),
+                              );
+                            }
+                          }
+                        },
+                  icon: const Icon(Icons.push_pin_outlined),
+                  label: const Text('Pin'),
+                ),
+              if (file.isPinned && onUnpin != null)
+                OutlinedButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final err = await onUnpin!(file);
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                            if (err != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(err)),
+                              );
+                            }
+                          }
+                        },
+                  icon: const Icon(Icons.push_pin),
+                  label: const Text('Unpin'),
+                ),
+              if (!file.hasLocalBytes)
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Listed only — cannot open offline'),
+                ),
+            ],
           ),
         ],
       ),

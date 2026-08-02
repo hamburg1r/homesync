@@ -8,7 +8,13 @@ part 'catalog_database.g.dart';
 
 /// Drift catalog mirror (`homesync_catalog_v2`). Server is SoT for list-only.
 @DriftDatabase(
-  tables: [CatalogFiles, CatalogTags, CatalogFileTags, SyncMetaEntries],
+  tables: [
+    CatalogFiles,
+    CatalogTags,
+    CatalogFileTags,
+    CatalogAvailability,
+    SyncMetaEntries,
+  ],
 )
 @lazySingleton
 class CatalogDatabase extends _$CatalogDatabase {
@@ -22,7 +28,19 @@ class CatalogDatabase extends _$CatalogDatabase {
   static const dbName = 'homesync_catalog_v2';
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) async {
+          await m.createAll();
+        },
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            await m.createTable(catalogAvailability);
+          }
+        },
+      );
 
   static QueryExecutor _openExecutor() {
     return driftDatabase(name: dbName);

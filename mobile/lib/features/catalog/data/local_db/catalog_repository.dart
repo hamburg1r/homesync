@@ -1,16 +1,25 @@
 import 'package:drift/drift.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
+import 'package:homesync_mobile/features/catalog/data/local_blob_store.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_database.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:injectable/injectable.dart';
 
 /// Catalog mirror access for sync + UI (hides Drift details).
 @lazySingleton
 class CatalogRepository {
-  CatalogRepository(this._db, this._log);
+  CatalogRepository(
+    this._db,
+    this._log,
+    this._blobs,
+    this._identity,
+  );
 
   final CatalogDatabase _db;
   final AppLog _log;
+  final LocalBlobStore _blobs;
+  final DeviceIdentity _identity;
 
   CatalogDatabase get database => _db;
 
@@ -32,6 +41,7 @@ class CatalogRepository {
   }
 
   Future<void> applyDelta(CatalogDelta delta) async {
+    final deviceId = await _identity.ensureDeviceId();
     await _db.transaction(() async {
       for (final tag in delta.tags) {
         await _db
@@ -66,6 +76,24 @@ class CatalogRepository {
         await (_db.delete(_db.catalogFileTags)
               ..where((t) => t.fileId.equals(file.fileId)))
             .go();
+
+        // Default remote files to listed for this device unless server sent a row.
+        final existing = await (_db.select(_db.catalogAvailability)
+              ..where(
+                (a) =>
+                    a.fileId.equals(file.fileId) & a.deviceId.equals(deviceId),
+              ))
+            .getSingleOrNull();
+        if (existing == null) {
+          await _db.into(_db.catalogAvailability).insert(
+                CatalogAvailabilityCompanion.insert(
+                  fileId: file.fileId,
+                  deviceId: deviceId,
+                  mode: AvailabilityMode.listed.wire,
+                  updatedAt: file.updatedAt,
+                ),
+              );
+        }
       }
 
       for (final ft in delta.fileTags) {
@@ -75,6 +103,21 @@ class CatalogRepository {
               CatalogFileTagsCompanion.insert(
                 fileId: ft.fileId,
                 tagId: ft.tagId,
+              ),
+            );
+      }
+
+      for (final avail in delta.availability) {
+        // Only persist this phone's availability locally.
+        if (avail.deviceId != deviceId) continue;
+        await _db
+            .into(_db.catalogAvailability)
+            .insertOnConflictUpdate(
+              CatalogAvailabilityCompanion.insert(
+                fileId: avail.fileId,
+                deviceId: avail.deviceId,
+                mode: AvailabilityMode.parse(avail.mode).wire,
+                updatedAt: avail.updatedAt,
               ),
             );
       }
@@ -93,8 +136,36 @@ class CatalogRepository {
     _log.info(
       'catalog',
       'applyDelta files=${delta.files.length} tags=${delta.tags.length} '
+      'availability=${delta.availability.length} '
       'cursor=${delta.nextCursor.isEmpty ? "(unchanged)" : delta.nextCursor}',
     );
+  }
+
+  Future<void> upsertAvailability({
+    required String fileId,
+    required String deviceId,
+    required AvailabilityMode mode,
+    required String updatedAt,
+  }) async {
+    await _db
+        .into(_db.catalogAvailability)
+        .insertOnConflictUpdate(
+          CatalogAvailabilityCompanion.insert(
+            fileId: fileId,
+            deviceId: deviceId,
+            mode: mode.wire,
+            updatedAt: updatedAt,
+          ),
+        );
+  }
+
+  Future<CatalogFile?> getFile(String fileId) async {
+    final row = await (_db.select(_db.catalogFiles)
+          ..where((f) => f.fileId.equals(fileId)))
+        .getSingleOrNull();
+    if (row == null) return null;
+    final mapped = await _mapFilesWithTags([row]);
+    return mapped.first;
   }
 
   Future<List<CatalogFile>> listActiveFiles() async {
@@ -119,9 +190,18 @@ class CatalogRepository {
   }
 
   Future<List<CatalogFile>> _mapFilesWithTags(List<CatalogFileRow> rows) async {
+    final deviceId = await _identity.ensureDeviceId();
     final result = <CatalogFile>[];
     for (final row in rows) {
       final tags = await _tagNamesFor(row.fileId);
+      final avail = await (_db.select(_db.catalogAvailability)
+            ..where(
+              (a) =>
+                  a.fileId.equals(row.fileId) & a.deviceId.equals(deviceId),
+            ))
+          .getSingleOrNull();
+      final mode = AvailabilityMode.parse(avail?.mode ?? 'listed');
+      final hasBytes = await _blobs.has(row.hashAlgo, row.contentHash);
       result.add(
         CatalogFile(
           fileId: row.fileId,
@@ -136,6 +216,8 @@ class CatalogRepository {
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
           tags: tags,
+          availabilityMode: mode,
+          hasLocalBytes: hasBytes,
         ),
       );
     }

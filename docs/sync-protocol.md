@@ -74,7 +74,7 @@ Response shape:
 }
 ```
 
-`availability` is empty until Milestone 4. Phone applies transactions locally. Deleted files arrive with `deleted_at` set (tombstones), not silent omission forever—omission-only sync is harder to reason about.
+`availability` includes rows for the `file_id`s in the page (all devices). Phone applies its own device rows; default local mode for new remote files is `listed` when the server sent no row.
 
 ## Default availability for remote files
 
@@ -86,6 +86,8 @@ Pinned files must appear in availability with `pinned` and trigger blob fetch.
 
 ## Blob transfer
 
+Implemented (Milestone 4 GET; PUT is Milestone 5):
+
 ```http
 GET /v1/blobs/{algo}/{hash}
 PUT /v1/blobs/{algo}/{hash}
@@ -93,9 +95,10 @@ PUT /v1/blobs/{algo}/{hash}
 
 Rules:
 
+- `GET` resolves managed `blobs/<algo>/<hh>/<hh>/<hash>` first, then a current hash-in-place library path.
+- Unknown / missing on disk → `404` (catalog may still list file as degraded).
 - Hash mismatch on upload → `400`.
-- Unknown hash on download → `404` (catalog may still list file as degraded).
-- Prefer `Content-Length`, `ETag`, and HTTP range requests when implementing resume.
+- Response includes `Content-Length`, `ETag`, `X-Content-Hash`, `X-Hash-Algo`. Prefer HTTP range requests when implementing resume.
 
 Pin flow is **two steps**:
 
@@ -127,12 +130,18 @@ PUT /v1/files/{file_id}/tags
 **LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
 
 Manual curl smoke: `scripts/metadata_api_smoke.sh` (daemon on `127.0.0.1:8787`, catalog already indexed).
+
 ## Availability updates
+
+Implemented (Milestone 4):
 
 ```http
 PUT /v1/files/{file_id}/availability/{device_id}
-{ "mode": "pinned", "updated_at": "…" }
+{ "mode": "pinned", "updated_at": "…", "base_updated_at": "…" }
+GET /v1/files/{file_id}/availability/{device_id}
 ```
+
+Modes: `listed` | `cached` | `pinned`. Upsert is LWW on `updated_at` (optional `base_updated_at` → `409` on mismatch). Setting availability bumps `files.updated_at` so catalog delta clients observe the change (same pattern as tags).
 
 Server should allow a device to update **its own** availability primarily. Cross-device admin can wait.
 

@@ -69,18 +69,18 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_phone_catalog.py`. Flutter: `mobile/test/scenarios/phone_catalog_test.dart` (+ cubit/browse). Device E2E deferred.
 
-## Milestone 4 — Pin + materialize
+## Milestone 4 — Pin + materialize (done)
 
 **Outcome:** User pins a file; bytes land on phone; unpin can delete local bytes but keep listing.
 
-- [ ] Availability API + local mode storage
-- [ ] Blob GET + local file store
-- [ ] Pin UI affordance
-- [ ] Disk budget / basic error if missing blob on PC
+- [x] Availability API + local mode storage
+- [x] Blob GET + local file store
+- [x] Pin UI affordance
+- [x] Disk budget / basic error if missing blob on PC
 
 **Exit check:** Airplane mode: pinned file opens; listed-only file does not.
 
-**E2E:** add `backend/tests/scenarios/test_pin_materialize.py` (availability pin + blob GET). Flutter/Maestro airplane-mode flow is Later.
+**E2E:** `backend/tests/scenarios/test_pin_materialize.py` (availability pin + blob GET). Flutter: `mobile/test/scenarios/pin_materialize_test.dart`. Device/Maestro airplane-mode flow is Later.
 
 ## Milestone 5 — Phone → PC ingest
 
@@ -176,3 +176,4 @@ Record important choices here as they happen.
 | 2026-07-31 | Phone catalog mirror: Drift (SQLite) + Bloc/Cubit; not Riverpod; blobs stay on filesystem | Typed migrations + watch queries before M4 availability; Cubit for sync UI states |
 | 2026-07-31 | Mobile foundation: feature-first flatter layout; get_it/injectable; freezed DTOs; logger; http not dio; codegen gitignored | Small-app stack; audit logs; agents run build_runner via mobile_check.sh |
 | 2026-07-31 | Flutter phone-free scenarios co-equal for `mobile/` changes | Mirror backend pytest guardrail without requiring a device |
+| 2026-07-31 | Milestone 4: availability API + blob GET; phone pin = mode + materialize; disk budget | Unpin deletes local bytes, keeps listing; hash-in-place still serves GET |

@@ -61,6 +61,9 @@ class File(Base):
 
     paths: Mapped[list[FilePath]] = relationship(back_populates="file")
     file_tags: Mapped[list[FileTag]] = relationship(back_populates="file")
+    availability_rows: Mapped[list[Availability]] = relationship(
+        back_populates="file"
+    )
 
 
 class FilePath(Base):
@@ -107,3 +110,18 @@ class FileTag(Base):
 
     file: Mapped[File] = relationship(back_populates="file_tags")
     tag: Mapped[Tag] = relationship(back_populates="file_tags")
+
+
+class Availability(Base):
+    __tablename__ = "availability"
+
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("files.file_id"), primary_key=True
+    )
+    device_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("devices.device_id"), primary_key=True
+    )
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    file: Mapped[File] = relationship(back_populates="availability_rows")

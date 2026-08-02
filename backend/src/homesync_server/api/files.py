@@ -8,7 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from homesync_server.api.deps import get_session
-from homesync_server.schemas.catalog import FileOut, FilePatchIn, FileTagsPutIn, TagOut
+from homesync_server.schemas.catalog import (
+    AvailabilityOut,
+    AvailabilityPutIn,
+    FileOut,
+    FilePatchIn,
+    FileTagsPutIn,
+    TagOut,
+)
+from homesync_server.services import availability as avail_svc
 from homesync_server.services import catalog as catalog_svc
 
 router = APIRouter(prefix="/v1", tags=["catalog"])
@@ -93,3 +101,57 @@ def put_file_tags(
 @router.get("/tags", response_model=list[TagOut])
 def list_tags(session: SessionDep) -> list[TagOut]:
     return [catalog_svc.tag_to_out(t) for t in catalog_svc.list_tags(session)]
+
+
+@router.put(
+    "/files/{file_id}/availability/{device_id}",
+    response_model=AvailabilityOut,
+)
+def put_availability(
+    file_id: str,
+    device_id: str,
+    body: AvailabilityPutIn,
+    session: SessionDep,
+) -> AvailabilityOut:
+    try:
+        row = avail_svc.set_availability(
+            session,
+            file_id,
+            device_id,
+            mode=body.mode,
+            updated_at=body.updated_at,
+            base_updated_at=body.base_updated_at,
+        )
+    except catalog_svc.NotFoundError as exc:
+        detail = "file not found" if not str(exc).startswith("device:") else "device not found"
+        raise HTTPException(status_code=404, detail=detail) from exc
+    except avail_svc.AvailabilityValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except catalog_svc.CatalogConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "availability conflict",
+                "file": catalog_svc.file_to_out(exc.file_row).model_dump(),
+            },
+        ) from exc
+    return avail_svc.availability_to_out(row)
+
+
+@router.get(
+    "/files/{file_id}/availability/{device_id}",
+    response_model=AvailabilityOut,
+)
+def get_availability(
+    file_id: str,
+    device_id: str,
+    session: SessionDep,
+) -> AvailabilityOut:
+    try:
+        catalog_svc.get_file(session, file_id)
+    except catalog_svc.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="file not found") from exc
+    row = avail_svc.get_availability(session, file_id, device_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="availability not found")
+    return avail_svc.availability_to_out(row)

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
@@ -19,7 +20,7 @@ class HomesyncApiException implements Exception {
       statusCode == null ? message : '$message (HTTP $statusCode)';
 }
 
-/// Thin HTTP client for Homesync `/v1` (catalog + devices). No blob downloads.
+/// Thin HTTP client for Homesync `/v1` (catalog, devices, availability, blobs).
 @lazySingleton
 class HomesyncApi {
   HomesyncApi(this._settings, this._log)
@@ -134,6 +135,60 @@ class HomesyncApi {
     return CatalogDelta.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
     );
+  }
+
+  Future<AvailabilityInfo> putAvailability({
+    required String fileId,
+    required String deviceId,
+    required String mode,
+    String? updatedAt,
+    String? baseUpdatedAt,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final body = <String, dynamic>{'mode': mode};
+    if (updatedAt != null) body['updated_at'] = updatedAt;
+    if (baseUpdatedAt != null) body['base_updated_at'] = baseUpdatedAt;
+    final response = await _send(
+      'PUT /v1/files/…/availability',
+      _client.put(
+        _uri('/v1/files/$fileId/availability/$deviceId'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'availability update failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return AvailabilityInfo.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<Uint8List> getBlob({
+    required String algo,
+    required String hexHash,
+  }) async {
+    refreshBaseUrlFromSettings();
+    // Blob downloads may be larger; allow a longer timeout.
+    final response = await _send(
+      'GET /v1/blobs/$algo/…',
+      _client.get(_uri('/v1/blobs/$algo/$hexHash')).timeout(
+            const Duration(seconds: 120),
+          ),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('blob not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'blob download failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return response.bodyBytes;
   }
 
   void close() => _client.close();

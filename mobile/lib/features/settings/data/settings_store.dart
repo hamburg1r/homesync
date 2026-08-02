@@ -12,9 +12,13 @@ class SettingsStore {
   static const defaultBaseUrl = 'http://10.0.2.2:8787';
   static const defaultDeviceName = 'android';
 
+  /// Default pin disk budget: 512 MiB.
+  static const defaultPinBudgetBytes = 512 * 1024 * 1024;
+
   static const _kBaseUrl = 'base_url';
   static const _kDeviceName = 'device_name';
   static const _kDeviceId = 'device_id';
+  static const _kPinBudgetBytes = 'pin_budget_bytes';
 
   /// Prefer DI `@preResolve`; available for tests.
   static Future<SettingsStore> open(AppLog log) async {
@@ -45,6 +49,17 @@ class SettingsStore {
 
   Future<void> setDeviceId(String value) async {
     await _prefs.setString(_kDeviceId, value);
+  }
+
+  int get pinBudgetBytes =>
+      _prefs.getInt(_kPinBudgetBytes) ?? defaultPinBudgetBytes;
+
+  Future<void> setPinBudgetBytes(int value) async {
+    if (value < 0) {
+      throw ArgumentError('pin budget must be non-negative');
+    }
+    await _prefs.setInt(_kPinBudgetBytes, value);
+    _log.info('settings', 'pin_budget_bytes set to $value');
   }
 
   /// Returns an error message if [raw] is not a usable http(s) base URL.

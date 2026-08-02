@@ -182,6 +182,8 @@ Implemented in schema migration `002_tags.sql` (Milestone 2). Tagging a file bum
 | `updated_at` | DATETIME | LWW field |
 | PRIMARY KEY | `(file_id, device_id)` | |
 
+Implemented in schema migration `003_availability.sql` (Milestone 4). Availability edits bump `files.updated_at` so catalog delta clients observe the change.
+
 Semantics:
 
 - **`listed`**: device may show metadata; should not expect full bytes.

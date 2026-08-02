@@ -264,11 +264,16 @@ def catalog_delta(
     last = files[-1]
     next_cursor = DeltaCursor(updated_at=last.updated_at, file_id=last.file_id).encode()
 
+    # Lazy import avoids catalog ↔ availability cycle at module load.
+    from homesync_server.services import availability as avail_svc
+
+    avail_rows = avail_svc.list_availability_for_files(session, file_ids)
+
     return CatalogDeltaOut(
         next_cursor=next_cursor,
         files=[file_to_out(f) for f in files],
         tags=[tag_to_out(t) for t in tags],
         file_tags=[FileTagOut(file_id=ft.file_id, tag_id=ft.tag_id) for ft in file_tag_rows],
         paths=[path_to_out(p) for p in paths],
-        availability=[],
+        availability=[avail_svc.availability_to_out(a) for a in avail_rows],
     )

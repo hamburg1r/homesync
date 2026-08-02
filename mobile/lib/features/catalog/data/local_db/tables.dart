@@ -1,6 +1,6 @@
 import 'package:drift/drift.dart';
 
-/// Local mirror of server `files` (list-only; no blob bytes).
+/// Local mirror of server `files` (list-only metadata; bytes live on disk).
 @DataClassName('CatalogFileRow')
 class CatalogFiles extends Table {
   TextColumn get fileId => text()();
@@ -36,6 +36,18 @@ class CatalogFileTags extends Table {
 
   @override
   Set<Column<Object>> get primaryKey => {fileId, tagId};
+}
+
+/// Per-device availability for this phone (`listed` / `cached` / `pinned`).
+@DataClassName('CatalogAvailabilityRow')
+class CatalogAvailability extends Table {
+  TextColumn get fileId => text()();
+  TextColumn get deviceId => text()();
+  TextColumn get mode => text()();
+  TextColumn get updatedAt => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {fileId, deviceId};
 }
 
 @DataClassName('SyncMetaRow')

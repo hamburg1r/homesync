@@ -1,4 +1,8 @@
-"""Catalog metadata and tagging services."""
+"""Catalog metadata and tagging services.
+
+Availability and blob helpers live in sibling modules
+(``availability``, ``blobs``).
+"""
 
 from homesync_server.services.catalog import (
     CatalogConflictError,
