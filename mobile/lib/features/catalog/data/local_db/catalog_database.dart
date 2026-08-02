@@ -14,6 +14,8 @@ part 'catalog_database.g.dart';
     CatalogFileTags,
     CatalogAvailability,
     SyncMetaEntries,
+    TrackingRules,
+    LocalTrackedFiles,
   ],
 )
 @lazySingleton
@@ -28,7 +30,7 @@ class CatalogDatabase extends _$CatalogDatabase {
   static const dbName = 'homesync_catalog_v2';
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -38,6 +40,10 @@ class CatalogDatabase extends _$CatalogDatabase {
         onUpgrade: (m, from, to) async {
           if (from < 2) {
             await m.createTable(catalogAvailability);
+          }
+          if (from < 3) {
+            await m.createTable(trackingRules);
+            await m.createTable(localTrackedFiles);
           }
         },
       );

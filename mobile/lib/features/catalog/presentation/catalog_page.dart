@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:homesync_mobile/app/injection.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
-import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
+import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sheet.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 
 class CatalogPage extends StatelessWidget {
   const CatalogPage({super.key, required this.settings});
@@ -15,7 +18,11 @@ class CatalogPage extends StatelessWidget {
     final changed = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => SettingsSheet(settings: settings),
+      builder: (context) => SettingsSheet(
+        settings: settings,
+        tracking: getIt<TrackingRepository>(),
+        onRulesChanged: () => cubit.onRulesChanged(),
+      ),
     );
     if (changed == true) {
       await cubit.refresh(showSpinnerWhenEmpty: true);
@@ -31,11 +38,21 @@ class CatalogPage extends StatelessWidget {
           files: state.files,
           statusMessage: state.statusMessage,
           busyFileId: state.busyFileId,
+          browseMode: state.browseMode,
+          groupRuleId: state.groupRuleId,
+          groupTitle: state.groupTitle,
+          deviceAndSyncedOnly: state.deviceAndSyncedOnly,
+          rules: state.rules,
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
           onPin: (file) => context.read<CatalogCubit>().pinFile(file.fileId),
           onUnpin: (file) => context.read<CatalogCubit>().unpinFile(file.fileId),
           onOpen: (file) => _openFile(context, file),
+          onSelectBrowse: (mode, {ruleId, title}) => context
+              .read<CatalogCubit>()
+              .setBrowseMode(mode, groupRuleId: ruleId, groupTitle: title),
+          onToggleDeviceSynced: (v) =>
+              context.read<CatalogCubit>().setDeviceAndSyncedOnly(v),
         );
       },
     );
@@ -88,7 +105,7 @@ class CatalogPage extends StatelessWidget {
   }
 }
 
-/// Presentational catalog browse UI (list + pin affordance).
+/// Presentational catalog browse UI (list + pin affordance + drawer).
 class CatalogBrowseView extends StatelessWidget {
   const CatalogBrowseView({
     super.key,
@@ -96,28 +113,59 @@ class CatalogBrowseView extends StatelessWidget {
     required this.files,
     this.statusMessage,
     this.busyFileId,
+    this.browseMode = BrowseMode.allCatalog,
+    this.groupRuleId,
+    this.groupTitle,
+    this.deviceAndSyncedOnly = false,
+    this.rules = const [],
     this.onRefresh,
     this.onOpenSettings,
     this.onPin,
     this.onUnpin,
     this.onOpen,
+    this.onSelectBrowse,
+    this.onToggleDeviceSynced,
   });
 
   final CatalogViewState state;
   final List<CatalogFile> files;
   final String? statusMessage;
   final String? busyFileId;
+  final BrowseMode browseMode;
+  final String? groupRuleId;
+  final String? groupTitle;
+  final bool deviceAndSyncedOnly;
+  final List<TrackingRule> rules;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<void> Function(CatalogFile file)? onOpen;
+  final void Function(
+    BrowseMode mode, {
+    String? ruleId,
+    String? title,
+  })? onSelectBrowse;
+  final ValueChanged<bool>? onToggleDeviceSynced;
+
+  String get _title {
+    switch (browseMode) {
+      case BrowseMode.allCatalog:
+        return 'Homesync';
+      case BrowseMode.group:
+        return groupTitle ?? 'Group';
+      case BrowseMode.trackedOnDevice:
+        return 'Tracked on device';
+      case BrowseMode.untrackedOnDevice:
+        return 'Untracked';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Homesync'),
+        title: Text(_title),
         actions: [
           if (onOpenSettings != null)
             IconButton(
@@ -126,6 +174,111 @@ class CatalogBrowseView extends StatelessWidget {
               icon: const Icon(Icons.settings_outlined),
             ),
         ],
+      ),
+      drawer: Drawer(
+        child: SafeArea(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: [
+              DrawerHeader(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+                child: Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Text(
+                    'Browse',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                ),
+              ),
+              SwitchListTile(
+                title: const Text('On this device & synced'),
+                subtitle: const Text('Hide listed-only / pending'),
+                value: deviceAndSyncedOnly,
+                onChanged: onToggleDeviceSynced,
+              ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(Icons.cloud_outlined),
+                title: const Text('All (catalog)'),
+                selected: browseMode == BrowseMode.allCatalog,
+                onTap: () {
+                  onSelectBrowse?.call(BrowseMode.allCatalog);
+                  Navigator.pop(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.phone_android),
+                title: const Text('Tracked on device'),
+                selected: browseMode == BrowseMode.trackedOnDevice,
+                onTap: () {
+                  onSelectBrowse?.call(BrowseMode.trackedOnDevice);
+                  Navigator.pop(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.link_off),
+                title: const Text('Untracked'),
+                selected: browseMode == BrowseMode.untrackedOnDevice,
+                onTap: () {
+                  onSelectBrowse?.call(BrowseMode.untrackedOnDevice);
+                  Navigator.pop(context);
+                },
+              ),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Text(
+                  'Groups',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              if (rules.isEmpty)
+                const ListTile(
+                  dense: true,
+                  title: Text('No tracking rules yet'),
+                  subtitle: Text('Add regex or folder rules in Settings'),
+                )
+              else
+                ...rules.map(
+                  (rule) => ListTile(
+                    leading: Icon(
+                      rule.kind == TrackingRuleKind.folder
+                          ? Icons.folder_outlined
+                          : Icons.pattern,
+                    ),
+                    title: Text(rule.name),
+                    subtitle: Text(
+                      rule.summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    selected: browseMode == BrowseMode.group &&
+                        groupRuleId == rule.id,
+                    onTap: () {
+                      onSelectBrowse?.call(
+                        BrowseMode.group,
+                        ruleId: rule.id,
+                        title: rule.name,
+                      );
+                      Navigator.pop(context);
+                    },
+                  ),
+                ),
+              const Divider(),
+              if (onOpenSettings != null)
+                ListTile(
+                  leading: const Icon(Icons.settings_outlined),
+                  title: const Text('Settings'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    onOpenSettings!();
+                  },
+                ),
+            ],
+          ),
+        ),
       ),
       body: Column(
         children: [
@@ -173,9 +326,10 @@ class CatalogBrowseView extends StatelessWidget {
                 child: _MessagePane(
                   icon: Icons.folder_open_outlined,
                   title: 'No files yet',
-                  subtitle:
-                      'Index a library on the PC, then pull to refresh. '
-                      'Listed items are metadata-only until you pin them.',
+                  subtitle: browseMode == BrowseMode.allCatalog
+                      ? 'Index a library on the PC, then pull to refresh. '
+                          'Or add tracking rules in Settings to upload from this phone.'
+                      : 'Nothing in this view. Pull to refresh or change drawer filter.',
                   actionLabel: 'Sync now',
                   onAction: onRefresh == null ? null : () => onRefresh!(),
                 ),
@@ -318,7 +472,9 @@ class _FileDetailSheet extends StatelessWidget {
                   icon: const Icon(Icons.open_in_new),
                   label: const Text('Open'),
                 ),
-              if (!file.isPinned && onPin != null)
+              if (!file.isPinned &&
+                  onPin != null &&
+                  !file.fileId.startsWith('local:'))
                 FilledButton.icon(
                   onPressed: busy
                       ? null

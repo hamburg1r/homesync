@@ -12,6 +12,8 @@ import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
+import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -89,7 +91,10 @@ class TestCatalogHarness {
     required this.pinService,
     required this.ingestQueue,
     required this.ingestService,
+    required this.tracking,
+    required this.scanner,
     required this.blobRoot,
+    required this.scanRoot,
   });
 
   final AppLog log;
@@ -102,20 +107,25 @@ class TestCatalogHarness {
   final PinService pinService;
   final IngestQueue ingestQueue;
   final IngestService ingestService;
+  final TrackingRepository tracking;
+  final DeviceScanner scanner;
   final Directory blobRoot;
+  final Directory scanRoot;
 
   static Future<TestCatalogHarness> open(
     MockClient client, {
     Directory? blobRoot,
+    Directory? scanRoot,
   }) async {
     SharedPreferences.setMockInitialValues({});
     final log = AppLog.silent();
     final settings = await SettingsStore.open(log);
-    // Stable device id for availability rows in tests.
     await settings.setDeviceId('d1');
     final database = CatalogDatabase.memory();
     final root = blobRoot ??
         Directory.systemTemp.createTempSync('homesync_pins_test_');
+    final scan = scanRoot ??
+        Directory.systemTemp.createTempSync('homesync_scan_test_');
     final blobs = LocalBlobStore.forRoot(log, root);
     final identity = DeviceIdentity(settings, log);
     final repository = CatalogRepository(database, log, blobs, identity);
@@ -145,6 +155,13 @@ class TestCatalogHarness {
       settings: settings,
       log: log,
     );
+    final tracking = TrackingRepository(database, log);
+    final scanner = DeviceScanner(
+      repository: tracking,
+      ingest: ingestService,
+      log: log,
+      scanRoots: [scan],
+    );
     return TestCatalogHarness(
       log: log,
       settings: settings,
@@ -156,7 +173,10 @@ class TestCatalogHarness {
       pinService: pinService,
       ingestQueue: ingestQueue,
       ingestService: ingestService,
+      tracking: tracking,
+      scanner: scanner,
       blobRoot: root,
+      scanRoot: scan,
     );
   }
 
@@ -164,6 +184,9 @@ class TestCatalogHarness {
     await repository.close();
     if (await blobRoot.exists()) {
       await blobRoot.delete(recursive: true);
+    }
+    if (await scanRoot.exists()) {
+      await scanRoot.delete(recursive: true);
     }
   }
 }

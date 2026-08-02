@@ -144,7 +144,7 @@ Optional JSON column `exif_json` is acceptable early; normalize later if needed.
 | `file_id` | UUID FK | |
 | `root_id` | UUID NULL FK | Null if standalone ingest |
 | `relative_path` | TEXT | Path under root |
-| `source_kind` | TEXT | `camera` \| `whatsapp` \| `download` \| `manual` \| `unknown` |
+| `source_kind` | TEXT | `camera` \| `whatsapp` \| `download` \| `misc` \| `manual` (legacy) \| `unknown` |
 | `source_device_id` | UUID NULL | Device that introduced this path |
 | `is_current` | BOOL | Current known path on Linux indexer |
 | `seen_at` | DATETIME | |

@@ -45,6 +45,8 @@ void main() {
         repository: harness.repository,
         sync: harness.sync,
         pinService: harness.pinService,
+        tracking: harness.tracking,
+        scanner: harness.scanner,
         log: harness.log,
       ),
       act: (cubit) => cubit.start(),
@@ -85,6 +87,8 @@ void main() {
         repository: harness.repository,
         sync: harness.sync,
         pinService: harness.pinService,
+        tracking: harness.tracking,
+        scanner: harness.scanner,
         log: harness.log,
       ),
       seed: () => const CatalogState(

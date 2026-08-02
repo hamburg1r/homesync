@@ -9,7 +9,11 @@ import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repositor
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
+import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 import 'package:injectable/injectable.dart';
+import 'package:path/path.dart' as p;
 
 enum CatalogViewState { loading, empty, ready, error, degraded }
 
@@ -20,6 +24,11 @@ final class CatalogState extends Equatable {
     this.statusMessage,
     this.refreshing = false,
     this.busyFileId,
+    this.browseMode = BrowseMode.allCatalog,
+    this.groupRuleId,
+    this.groupTitle,
+    this.deviceAndSyncedOnly = false,
+    this.rules = const [],
   });
 
   final CatalogViewState viewState;
@@ -27,6 +36,11 @@ final class CatalogState extends Equatable {
   final String? statusMessage;
   final bool refreshing;
   final String? busyFileId;
+  final BrowseMode browseMode;
+  final String? groupRuleId;
+  final String? groupTitle;
+  final bool deviceAndSyncedOnly;
+  final List<TrackingRule> rules;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -36,6 +50,12 @@ final class CatalogState extends Equatable {
     bool? refreshing,
     String? busyFileId,
     bool clearBusyFileId = false,
+    BrowseMode? browseMode,
+    String? groupRuleId,
+    bool clearGroup = false,
+    String? groupTitle,
+    bool? deviceAndSyncedOnly,
+    List<TrackingRule>? rules,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -44,12 +64,27 @@ final class CatalogState extends Equatable {
           clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
       refreshing: refreshing ?? this.refreshing,
       busyFileId: clearBusyFileId ? null : (busyFileId ?? this.busyFileId),
+      browseMode: browseMode ?? this.browseMode,
+      groupRuleId: clearGroup ? null : (groupRuleId ?? this.groupRuleId),
+      groupTitle: clearGroup ? null : (groupTitle ?? this.groupTitle),
+      deviceAndSyncedOnly: deviceAndSyncedOnly ?? this.deviceAndSyncedOnly,
+      rules: rules ?? this.rules,
     );
   }
 
   @override
-  List<Object?> get props =>
-      [viewState, files, statusMessage, refreshing, busyFileId];
+  List<Object?> get props => [
+        viewState,
+        files,
+        statusMessage,
+        refreshing,
+        busyFileId,
+        browseMode,
+        groupRuleId,
+        groupTitle,
+        deviceAndSyncedOnly,
+        rules,
+      ];
 }
 
 /// Catalog UI state: watches local Drift rows + drives delta refresh / pin.
@@ -59,45 +94,158 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.repository,
     required this.sync,
     required this.pinService,
+    required this.tracking,
+    required this.scanner,
     required this.log,
   }) : super(const CatalogState()) {
-    _filesSub = repository.watchActiveFiles().listen(_onFiles);
+    _filesSub = repository.watchActiveFiles().listen(_onCatalogFiles);
+    _rulesSub = tracking.watchRules().listen((rules) {
+      if (!isClosed) emit(state.copyWith(rules: rules));
+    });
   }
 
   final CatalogRepository repository;
   final CatalogSync sync;
   final PinService pinService;
+  final TrackingRepository tracking;
+  final DeviceScanner scanner;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
+  StreamSubscription<List<TrackingRule>>? _rulesSub;
+  List<CatalogFile> _catalogFiles = const [];
   bool _started = false;
 
   Future<void> start() async {
     if (_started) return;
     _started = true;
     log.info('catalog', 'cubit start');
+    final rules = await tracking.listRules();
+    if (!isClosed) emit(state.copyWith(rules: rules));
     await refresh(showSpinnerWhenEmpty: true);
   }
 
-  void _onFiles(List<CatalogFile> files) {
+  void _onCatalogFiles(List<CatalogFile> files) {
+    _catalogFiles = files;
     if (isClosed) return;
-    final syncing = state.refreshing;
-    if (syncing) {
-      emit(state.copyWith(files: files));
+    if (state.browseMode != BrowseMode.allCatalog) {
+      unawaited(_emitBrowseList());
+      return;
+    }
+    _emitFilteredCatalog(files);
+  }
+
+  void _emitFilteredCatalog(List<CatalogFile> files) {
+    final filtered = _applyDeviceSyncedFilter(files);
+    if (state.refreshing) {
+      emit(state.copyWith(files: filtered));
       return;
     }
     if (state.viewState == CatalogViewState.error ||
         state.viewState == CatalogViewState.degraded) {
-      emit(state.copyWith(files: files));
+      emit(state.copyWith(files: filtered));
       return;
     }
     emit(
       state.copyWith(
-        files: files,
+        files: filtered,
         viewState:
-            files.isEmpty ? CatalogViewState.empty : CatalogViewState.ready,
+            filtered.isEmpty ? CatalogViewState.empty : CatalogViewState.ready,
         clearStatusMessage: true,
       ),
     );
+  }
+
+  List<CatalogFile> _applyDeviceSyncedFilter(List<CatalogFile> files) {
+    if (!state.deviceAndSyncedOnly) return files;
+    return files.where((f) => f.hasLocalBytes && !f.isDeleted).toList();
+  }
+
+  Future<void> setBrowseMode(
+    BrowseMode mode, {
+    String? groupRuleId,
+    String? groupTitle,
+  }) async {
+    emit(
+      state.copyWith(
+        browseMode: mode,
+        groupRuleId: groupRuleId,
+        groupTitle: groupTitle,
+        clearGroup: mode != BrowseMode.group,
+      ),
+    );
+    await _emitBrowseList();
+  }
+
+  Future<void> setDeviceAndSyncedOnly(bool value) async {
+    emit(state.copyWith(deviceAndSyncedOnly: value));
+    await _emitBrowseList();
+  }
+
+  Future<void> _emitBrowseList() async {
+    List<CatalogFile> files;
+    switch (state.browseMode) {
+      case BrowseMode.allCatalog:
+        files = _applyDeviceSyncedFilter(_catalogFiles);
+      case BrowseMode.group:
+        final locals = await tracking.listLocalFiles(ruleId: state.groupRuleId);
+        files = await _localsToCatalogFiles(locals);
+      case BrowseMode.trackedOnDevice:
+        files = await _localsToCatalogFiles(await tracking.listTracked());
+      case BrowseMode.untrackedOnDevice:
+        files = await _localsToCatalogFiles(await tracking.listUntracked());
+    }
+    if (state.deviceAndSyncedOnly && state.browseMode != BrowseMode.allCatalog) {
+      files = files
+          .where((f) => f.hasLocalBytes && !f.fileId.startsWith('local:'))
+          .toList();
+    }
+    if (isClosed) return;
+    final preserve =
+        state.viewState == CatalogViewState.error ||
+        state.viewState == CatalogViewState.degraded;
+    emit(
+      state.copyWith(
+        files: files,
+        viewState: preserve
+            ? state.viewState
+            : (files.isEmpty
+                ? CatalogViewState.empty
+                : CatalogViewState.ready),
+      ),
+    );
+  }
+
+  Future<List<CatalogFile>> _localsToCatalogFiles(
+    List<LocalTrackedFile> locals,
+  ) async {
+    final out = <CatalogFile>[];
+    for (final local in locals) {
+      if (local.fileId != null) {
+        final catalog = await repository.getFile(local.fileId!);
+        if (catalog != null) {
+          out.add(catalog);
+          continue;
+        }
+      }
+      final now = local.seenAt;
+      out.add(
+        CatalogFile(
+          fileId: local.fileId ?? 'local:${local.localPath}',
+          contentHash: local.contentHash ?? 'pending',
+          hashAlgo: 'blake3',
+          mimeType: local.mimeType,
+          sizeBytes: local.sizeBytes,
+          title: local.title ?? p.basename(local.localPath),
+          createdAt: now,
+          updatedAt: now,
+          availabilityMode: local.isSynced
+              ? AvailabilityMode.pinned
+              : AvailabilityMode.listed,
+          hasLocalBytes: true,
+        ),
+      );
+    }
+    return out;
   }
 
   Future<void> refresh({bool showSpinnerWhenEmpty = false}) async {
@@ -113,50 +261,60 @@ class CatalogCubit extends Cubit<CatalogState> {
     final result = await sync.sync();
     if (isClosed) return;
 
+    // Scan + ingest when rules exist (no-op if empty).
+    try {
+      await scanner.scanAndIngest();
+    } catch (e) {
+      log.warn('catalog', 'tracking scan failed: $e');
+    }
+
     final files = await repository.listActiveFiles();
+    _catalogFiles = files;
     if (result.ok) {
       log.info('catalog', 'refresh ok count=${files.length}');
       emit(
         state.copyWith(
           refreshing: false,
-          files: files,
-          viewState:
-              files.isEmpty ? CatalogViewState.empty : CatalogViewState.ready,
           clearStatusMessage: true,
         ),
       );
+      await _emitBrowseList();
     } else {
       final err = result.error?.toString() ?? 'sync failed';
       log.warn('catalog', 'refresh degraded/error: $err');
       emit(
         state.copyWith(
           refreshing: false,
-          files: files,
           statusMessage: err,
           viewState: files.isEmpty
               ? CatalogViewState.error
               : CatalogViewState.degraded,
         ),
       );
+      await _emitBrowseList();
     }
   }
 
+  Future<void> onRulesChanged() async {
+    final rules = await tracking.listRules();
+    if (!isClosed) emit(state.copyWith(rules: rules));
+    await scanner.scanAndIngest();
+    await _emitBrowseList();
+  }
+
   Future<String?> pinFile(String fileId) async {
+    if (fileId.startsWith('local:')) {
+      return 'Sync this file first (pending ingest)';
+    }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
       await pinService.pin(fileId);
       final files = await repository.listActiveFiles();
+      _catalogFiles = files;
       if (!isClosed) {
-        emit(
-          state.copyWith(
-            files: files,
-            clearBusyFileId: true,
-            viewState: files.isEmpty
-                ? CatalogViewState.empty
-                : CatalogViewState.ready,
-          ),
-        );
+        emit(state.copyWith(clearBusyFileId: true));
       }
+      await _emitBrowseList();
       return null;
     } catch (e) {
       log.warn('catalog', 'pin failed: $e');
@@ -173,21 +331,18 @@ class CatalogCubit extends Cubit<CatalogState> {
   }
 
   Future<String?> unpinFile(String fileId) async {
+    if (fileId.startsWith('local:')) {
+      return 'Not a catalog file';
+    }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
       await pinService.unpin(fileId);
       final files = await repository.listActiveFiles();
+      _catalogFiles = files;
       if (!isClosed) {
-        emit(
-          state.copyWith(
-            files: files,
-            clearBusyFileId: true,
-            viewState: files.isEmpty
-                ? CatalogViewState.empty
-                : CatalogViewState.ready,
-          ),
-        );
+        emit(state.copyWith(clearBusyFileId: true));
       }
+      await _emitBrowseList();
       return null;
     } catch (e) {
       log.warn('catalog', 'unpin failed: $e');
@@ -220,6 +375,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   @override
   Future<void> close() async {
     await _filesSub?.cancel();
+    await _rulesSub?.cancel();
     return super.close();
   }
 }

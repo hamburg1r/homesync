@@ -53,7 +53,8 @@ class IngestQueue {
     required int sizeBytes,
     String? mimeType,
     String? title,
-    String sourceKind = 'camera',
+    String sourceKind = 'misc',
+    String? relativePath,
   }) {
     return IngestQueueItem(
       id: const Uuid().v4(),
@@ -63,6 +64,7 @@ class IngestQueue {
       mimeType: mimeType,
       title: title,
       sourceKind: sourceKind,
+      relativePath: relativePath,
       createdAt: DateTime.now().toUtc().toIso8601String(),
     );
   }
@@ -76,7 +78,8 @@ class IngestQueueItem {
     required this.sizeBytes,
     this.mimeType,
     this.title,
-    this.sourceKind = 'camera',
+    this.sourceKind = 'misc',
+    this.relativePath,
     required this.createdAt,
   });
 
@@ -87,6 +90,7 @@ class IngestQueueItem {
   final String? mimeType;
   final String? title;
   final String sourceKind;
+  final String? relativePath;
   final String createdAt;
 
   Map<String, dynamic> toJson() => {
@@ -97,6 +101,7 @@ class IngestQueueItem {
         'mime_type': mimeType,
         'title': title,
         'source_kind': sourceKind,
+        'relative_path': relativePath,
         'created_at': createdAt,
       };
 
@@ -108,7 +113,8 @@ class IngestQueueItem {
       sizeBytes: json['size_bytes'] as int,
       mimeType: json['mime_type'] as String?,
       title: json['title'] as String?,
-      sourceKind: json['source_kind'] as String? ?? 'camera',
+      sourceKind: json['source_kind'] as String? ?? 'misc',
+      relativePath: json['relative_path'] as String?,
       createdAt: json['created_at'] as String,
     );
   }

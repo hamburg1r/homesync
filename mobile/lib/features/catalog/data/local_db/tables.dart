@@ -58,3 +58,39 @@ class SyncMetaEntries extends Table {
   @override
   Set<Column<Object>> get primaryKey => {key};
 }
+
+/// User-configured tracking rule (regex pattern or folder). Group name for drawer.
+@DataClassName('TrackingRuleRow')
+class TrackingRules extends Table {
+  TextColumn get id => text()();
+  /// Display / drawer group name; defaults to `misc` when blank at insert time.
+  TextColumn get name => text()();
+  /// `regex` | `folder`
+  TextColumn get kind => text()();
+  /// Glob/regex pattern, or absolute folder path / SAF URI.
+  TextColumn get patternOrUri => text()();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+  TextColumn get createdAt => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
+/// Device file discovered by a scan (tracked if [ruleId] set).
+@DataClassName('LocalTrackedFileRow')
+class LocalTrackedFiles extends Table {
+  TextColumn get localPath => text()();
+  TextColumn get ruleId => text().nullable()();
+  TextColumn get fileId => text().nullable()();
+  TextColumn get contentHash => text().nullable()();
+  TextColumn get title => text().nullable()();
+  IntColumn get sizeBytes => integer().withDefault(const Constant(0))();
+  TextColumn get mimeType => text().nullable()();
+  TextColumn get sourceKind => text().withDefault(const Constant('misc'))();
+  TextColumn get seenAt => text()();
+  /// `pending` | `synced` | `failed` | `untracked`
+  TextColumn get ingestStatus => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {localPath};
+}

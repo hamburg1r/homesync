@@ -191,6 +191,7 @@ sequenceDiagram
 - Standalone ingest uses `file_paths.root_id = NULL` and a synthetic `relative_path` under `ingest/<source_kind>/…`.
 - Linux retention: create pins the host `linux` device to `pinned` so the managed blob is kept.
 - Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync).
+- **Tracking rules (phone):** named regex/folder rules in Settings (empty = no auto upload). Group name optional (default `misc`). Scanner walks granted storage roots; `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the same queue.
 
 ## WhatsApp-style restore (canonical story)
 

@@ -22,7 +22,7 @@ from homesync_server.util import new_uuid, next_updated_at, utc_now_iso
 
 _CURSOR_PREFIX = "v1:"
 _ALLOWED_SOURCE_KINDS = frozenset(
-    {"camera", "whatsapp", "download", "manual", "unknown"}
+    {"camera", "whatsapp", "download", "manual", "misc", "unknown"}
 )
 
 

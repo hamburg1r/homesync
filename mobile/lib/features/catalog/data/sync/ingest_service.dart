@@ -44,7 +44,8 @@ class IngestService {
     Uint8List bytes, {
     String? title,
     String? mimeType,
-    String sourceKind = 'camera',
+    String sourceKind = 'misc',
+    String? relativePath,
   }) async {
     final hash = ContentHash.blake3Hex(bytes);
     await blobs.write(ContentHash.algo, hash, bytes);
@@ -56,6 +57,7 @@ class IngestService {
       mimeType: mimeType,
       title: title,
       sourceKind: sourceKind,
+      relativePath: relativePath,
     );
     await queue.enqueue(item);
 
@@ -111,6 +113,7 @@ class IngestService {
         title: item.title,
         sourceKind: item.sourceKind,
         sourceDeviceId: deviceId,
+        relativePath: item.relativePath,
       ),
     );
 

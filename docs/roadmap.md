@@ -178,3 +178,4 @@ Record important choices here as they happen.
 | 2026-07-31 | Flutter phone-free scenarios co-equal for `mobile/` changes | Mirror backend pytest guardrail without requiring a device |
 | 2026-07-31 | Milestone 4: availability API + blob GET; phone pin = mode + materialize; disk budget | Unpin deletes local bytes, keeps listing; hash-in-place still serves GET |
 | 2026-08-02 | Milestone 5: blob PUT + POST /files ingest; Linux host pinned on create; phone durable queue | Managed CAS for phone uploads; provenance on file_paths; camera UI polish Later |
+| 2026-08-03 | Phone tracking rules (regex + folder) + drawer browse; path-inferred source_kind; misc default group name | Full FS walk not MediaStore; folder/tag browse Later |

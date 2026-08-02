@@ -73,7 +73,7 @@ void main() {
           createCount += 1;
           final body = jsonDecode(request.body) as Map<String, dynamic>;
           expect(body['content_hash'], hash);
-          expect(body['source_kind'], 'camera');
+          expect(body['source_kind'], 'misc');
           expect(body['source_device_id'], 'd1');
           return http.Response(
             '''
