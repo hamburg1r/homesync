@@ -254,8 +254,8 @@ flowchart TD
 
 - Catalog delta includes `paths[]` with `source_kind` / `source_device_id`.
 - Phone mirrors paths locally and surfaces provenance (`from WhatsApp · on PC only` when listed without bytes).
-- **Bring to phone** = same as pin (availability `pinned` + blob GET).
-- Unpin deletes local bytes but keeps the catalog listing (ghost again).
+- **Bring to phone** = same as pin (availability `pinned` + blob GET). When bytes are not already on device, the UI asks for a **download folder + file name** (default from Settings → Pin download folder; empty = app `homesync_pins` CAS). Custom destinations are recorded in `pin_local_paths`.
+- **Keep on PC only** = availability `listed` + delete local copies (CAS pin store, custom pin path, and phone-origin path if present). Catalog listing remains (ghost again).
 - Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the active listing. Local pin bytes are deleted **only** if the file was marked **Bound to server** (pinned-only phone policy). Explicit **Remove from PC** on the phone still drops local bytes. Blob GC on Linux remains deferred.
 
 Provenance rows explain *why* it still exists (“imported from WhatsApp backup on nixos”).

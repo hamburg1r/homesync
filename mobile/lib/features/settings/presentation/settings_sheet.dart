@@ -199,6 +199,47 @@ class _SettingsSheetState extends State<SettingsSheet> {
               },
             ),
             const Divider(height: 32),
+            Text('Downloads', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'Default folder for Pin / Bring to phone. Empty uses the app '
+              'hash pin store. You can still pick a path per download.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Pin download folder'),
+              subtitle: Text(
+                widget.settings.pinDestinationDir ??
+                    'App default (homesync_pins)',
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.settings.pinDestinationDir != null)
+                    IconButton(
+                      tooltip: 'Clear',
+                      onPressed: () async {
+                        await widget.settings.setPinDestinationDir(null);
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.clear),
+                    ),
+                  IconButton(
+                    tooltip: 'Pick folder',
+                    onPressed: () async {
+                      final path = await FilePicker.getDirectoryPath();
+                      if (path == null) return;
+                      await widget.settings.setPinDestinationDir(path);
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.folder_open),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 32),
             Text('Appearance', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(

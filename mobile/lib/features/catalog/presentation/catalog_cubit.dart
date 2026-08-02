@@ -397,13 +397,23 @@ class CatalogCubit extends Cubit<CatalogState> {
     await _emitBrowseList();
   }
 
-  Future<String?> pinFile(String fileId) async {
+  Future<String?> pinFile(
+    String fileId, {
+    String? destinationDir,
+    String? fileName,
+  }) async {
     if (fileId.startsWith('local:')) {
       return 'Sync this file first (pending ingest)';
     }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
-      await pinService.bringToPhone(fileId);
+      await pinService.bringToPhone(
+        fileId,
+        destination: PinDestination(
+          directory: destinationDir,
+          fileName: fileName,
+        ),
+      );
       final files = await repository.listActiveFiles();
       _catalogFiles = files;
       if (!isClosed) {
@@ -425,13 +435,14 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
   }
 
-  Future<String?> unpinFile(String fileId) async {
+  /// Keep listing on phone catalog; delete local bytes (PC retains the blob).
+  Future<String?> keepOnPcOnly(String fileId) async {
     if (fileId.startsWith('local:')) {
       return 'Not a catalog file';
     }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
-      await pinService.unpin(fileId);
+      await pinService.keepOnPcOnly(fileId);
       final files = await repository.listActiveFiles();
       _catalogFiles = files;
       if (!isClosed) {
@@ -440,7 +451,7 @@ class CatalogCubit extends Cubit<CatalogState> {
       await _emitBrowseList();
       return null;
     } catch (e) {
-      log.warn('catalog', 'unpin failed: $e');
+      log.warn('catalog', 'keep on PC only failed: $e');
       if (!isClosed) {
         emit(
           state.copyWith(
@@ -452,6 +463,8 @@ class CatalogCubit extends Cubit<CatalogState> {
       return e.toString();
     }
   }
+
+  Future<String?> unpinFile(String fileId) => keepOnPcOnly(fileId);
 
   /// Soft-delete on the PC; drops local listing + unreferenced pin bytes.
   Future<String?> deleteFromPc(String fileId) async {

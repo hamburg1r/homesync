@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/app/injection.dart';
@@ -51,8 +52,9 @@ class CatalogPage extends StatelessWidget {
           ingestProgress: state.ingestProgress,
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
-          onPin: (file) => context.read<CatalogCubit>().pinFile(file.fileId),
-          onUnpin: (file) => context.read<CatalogCubit>().unpinFile(file.fileId),
+          onPin: (file) => _bringToPhone(context, file),
+          onUnpin: (file) =>
+              context.read<CatalogCubit>().keepOnPcOnly(file.fileId),
           onDeleteFromPc: (file) =>
               context.read<CatalogCubit>().deleteFromPc(file.fileId),
           onBoundToServer: (file, bound) => context
@@ -74,6 +76,28 @@ class CatalogPage extends StatelessWidget {
               context.read<CatalogCubit>().thumbService.ensureThumb(file),
         );
       },
+    );
+  }
+
+  Future<String?> _bringToPhone(BuildContext context, CatalogFile file) async {
+    final cubit = context.read<CatalogCubit>();
+    // Already on device (origin / prior pin) — just flip availability.
+    if (file.hasLocalBytes) {
+      return cubit.pinFile(file.fileId);
+    }
+    final choice = await showDialog<_PinDestChoice>(
+      context: context,
+      builder: (context) => _PinDestinationDialog(
+        file: file,
+        initialDir: cubit.settings.pinDestinationDir,
+      ),
+    );
+    if (choice == null) return 'cancelled';
+    if (!context.mounted) return 'cancelled';
+    return cubit.pinFile(
+      file.fileId,
+      destinationDir: choice.directory,
+      fileName: choice.fileName,
     );
   }
 
@@ -802,13 +826,13 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                       ? null
                       : () async {
                           final err = await widget.onPin!(file);
-                          if (context.mounted) {
-                            Navigator.pop(context);
-                            if (err != null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text(err)),
-                              );
-                            }
+                          if (!context.mounted) return;
+                          if (err == 'cancelled') return;
+                          Navigator.pop(context);
+                          if (err != null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(err)),
+                            );
                           }
                         },
                   icon: Icon(
@@ -818,11 +842,35 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                   ),
                   label: Text(bringLabel),
                 ),
-              if (file.isPinned && widget.onUnpin != null)
+              if (file.hasLocalBytes &&
+                  widget.onUnpin != null &&
+                  !file.fileId.startsWith('local:'))
                 OutlinedButton.icon(
                   onPressed: busy
                       ? null
                       : () async {
+                          final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Keep on PC only?'),
+                              content: Text(
+                                'Remove “${file.displayName}” from this device. '
+                                'The PC catalog copy stays. Local files at the '
+                                'origin or download path will be deleted.',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context, false),
+                                  child: const Text('Cancel'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(context, true),
+                                  child: const Text('Remove from device'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (ok != true || !context.mounted) return;
                           final err = await widget.onUnpin!(file);
                           if (context.mounted) {
                             Navigator.pop(context);
@@ -833,8 +881,8 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                             }
                           }
                         },
-                  icon: const Icon(Icons.push_pin),
-                  label: const Text('Unpin'),
+                  icon: const Icon(Icons.phonelink_erase_outlined),
+                  label: const Text('Keep on PC only'),
                 ),
               if (canDeleteFromPc)
                 OutlinedButton.icon(
@@ -857,6 +905,129 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _PinDestChoice {
+  const _PinDestChoice({this.directory, this.fileName});
+
+  final String? directory;
+  final String? fileName;
+}
+
+class _PinDestinationDialog extends StatefulWidget {
+  const _PinDestinationDialog({
+    required this.file,
+    this.initialDir,
+  });
+
+  final CatalogFile file;
+  final String? initialDir;
+
+  @override
+  State<_PinDestinationDialog> createState() => _PinDestinationDialogState();
+}
+
+class _PinDestinationDialogState extends State<_PinDestinationDialog> {
+  late final TextEditingController _name;
+  late String? _dir;
+  bool _useAppDefault = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.file.displayName);
+    _dir = widget.initialDir;
+    _useAppDefault = _dir == null || _dir!.isEmpty;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDir() async {
+    final path = await FilePicker.getDirectoryPath();
+    if (path == null || !mounted) return;
+    setState(() {
+      _dir = path;
+      _useAppDefault = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.file.isGhost ? 'Bring to phone' : 'Pin to this device',
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _name,
+              decoration: const InputDecoration(
+                labelText: 'File name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('App pin store'),
+              subtitle: const Text(
+                'Hash-addressed under app storage. Off = choose a folder.',
+              ),
+              value: _useAppDefault,
+              onChanged: (v) => setState(() {
+                _useAppDefault = v;
+                if (v) _dir = null;
+              }),
+            ),
+            if (!_useAppDefault) ...[
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Download folder'),
+                subtitle: Text(
+                  (_dir == null || _dir!.isEmpty)
+                      ? 'Tap to pick a folder'
+                      : _dir!,
+                ),
+                trailing: const Icon(Icons.folder_open),
+                onTap: _pickDir,
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_useAppDefault && (_dir == null || _dir!.isEmpty)) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Pick a download folder')),
+              );
+              return;
+            }
+            Navigator.pop(
+              context,
+              _PinDestChoice(
+                directory: _useAppDefault ? null : _dir,
+                fileName: _name.text.trim().isEmpty ? null : _name.text.trim(),
+              ),
+            );
+          },
+          child: const Text('Download'),
+        ),
+      ],
     );
   }
 }

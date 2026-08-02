@@ -26,6 +26,7 @@ class SettingsStore extends ChangeNotifier {
   static const _kThemeMode = 'theme_mode';
   static const _kUseDynamicColor = 'use_dynamic_color';
   static const _kSyncEnabled = 'sync_enabled';
+  static const _kPinDestinationDir = 'pin_destination_dir';
 
   /// Prefer DI `@preResolve`; available for tests.
   static Future<SettingsStore> open(AppLog log) async {
@@ -108,6 +109,25 @@ class SettingsStore extends ChangeNotifier {
   Future<void> setSyncEnabled(bool value) async {
     await _prefs.setBool(_kSyncEnabled, value);
     _log.info('settings', 'sync_enabled set to $value');
+    notifyListeners();
+  }
+
+  /// Default folder for PC→phone materialize (empty = app `homesync_pins` CAS).
+  String? get pinDestinationDir {
+    final raw = _prefs.getString(_kPinDestinationDir)?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    return raw;
+  }
+
+  Future<void> setPinDestinationDir(String? value) async {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      await _prefs.remove(_kPinDestinationDir);
+      _log.info('settings', 'pin_destination_dir cleared (app default)');
+    } else {
+      await _prefs.setString(_kPinDestinationDir, trimmed);
+      _log.info('settings', 'pin_destination_dir set to $trimmed');
+    }
     notifyListeners();
   }
 

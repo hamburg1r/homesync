@@ -83,6 +83,7 @@ class CatalogRepository {
         if (file.deletedAt != null) {
           final bound = await _isBoundToServer(file.fileId);
           if (bound) {
+            await clearPinLocalPath(file.fileId);
             await _deleteBlobIfUnreferenced(
               algo: file.hashAlgo,
               contentHash: file.contentHash,
@@ -226,6 +227,7 @@ class CatalogRepository {
   Future<void> applyTombstone(CatalogFile file) async {
     await upsertFile(file);
     if (file.deletedAt != null) {
+      await clearPinLocalPath(file.fileId);
       await _deleteBlobIfUnreferenced(
         algo: file.hashAlgo,
         contentHash: file.contentHash,
@@ -252,6 +254,40 @@ class CatalogRepository {
 
   Future<void> clearBoundToServer(String fileId) async {
     await (_db.delete(_db.pinServerBinds)
+          ..where((t) => t.fileId.equals(fileId)))
+        .go();
+  }
+
+  Future<String?> pinLocalPathForFileId(String fileId) async {
+    final row = await (_db.select(_db.pinLocalPaths)
+          ..where((t) => t.fileId.equals(fileId)))
+        .getSingleOrNull();
+    return row?.absolutePath;
+  }
+
+  Future<void> setPinLocalPath(String fileId, String absolutePath) async {
+    await _db.into(_db.pinLocalPaths).insertOnConflictUpdate(
+          PinLocalPathsCompanion.insert(
+            fileId: fileId,
+            absolutePath: absolutePath,
+          ),
+        );
+  }
+
+  /// Delete the materialised file on disk (if any) and clear the mapping.
+  Future<void> clearPinLocalPath(
+    String fileId, {
+    bool deleteFile = true,
+  }) async {
+    final path = await pinLocalPathForFileId(fileId);
+    if (deleteFile && path != null) {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+        _log.info('catalog', 'deleted pin local path $path');
+      }
+    }
+    await (_db.delete(_db.pinLocalPaths)
           ..where((t) => t.fileId.equals(fileId)))
         .go();
   }
@@ -346,6 +382,8 @@ class CatalogRepository {
       final hasPin = await _blobs.has(row.hashAlgo, row.contentHash);
       final origin = await originPathForFileId(row.fileId);
       final hasOrigin = origin != null && await File(origin).exists();
+      final pinLocal = await pinLocalPathForFileId(row.fileId);
+      final hasPinLocal = pinLocal != null && await File(pinLocal).exists();
       final sourceKind = await _primarySourceKind(row.fileId);
       final bound = await _isBoundToServer(row.fileId);
       result.add(
@@ -363,7 +401,7 @@ class CatalogRepository {
           deletedAt: row.deletedAt,
           tags: tags,
           availabilityMode: mode,
-          hasLocalBytes: hasPin || hasOrigin,
+          hasLocalBytes: hasPin || hasOrigin || hasPinLocal,
           primarySourceKind: sourceKind,
           boundToServer: bound,
         ),

@@ -124,3 +124,13 @@ class PinServerBinds extends Table {
   @override
   Set<Column<Object>> get primaryKey => {fileId};
 }
+
+/// Absolute path where a PC→phone pin was materialised (friendly name / custom dir).
+@DataClassName('PinLocalPathRow')
+class PinLocalPaths extends Table {
+  TextColumn get fileId => text()();
+  TextColumn get absolutePath => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {fileId};
+}

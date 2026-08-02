@@ -188,3 +188,5 @@ Record important choices here as they happen.
 | 2026-08-03 | Phone→PC ingest from original path only (no `homesync_pins` copy) | Avoid duplicating camera/Downloads under app storage; pin store stays PC→phone |
 | 2026-08-03 | Resumable blob uploads: `POST/PATCH /v1/blob-uploads` + offset ack | Large-folder stalls; reconnect resumes; 4 MiB chunks; 1h chunk timeout; partials ≤7d |
 | 2026-08-03 | File detail shows path; Open uses Android VIEW intent (`open_filex`) | In-app text preview was a dead end; system apps handle mime types |
+| 2026-08-03 | Keep on PC only = listed + delete all local copies (CAS / custom / origin) | Clear “remove from device, retain PC”; replaces vague Unpin for user-facing |
+| 2026-08-03 | PC→phone materialize path: settings default + per-download folder/name | Was app-only `homesync_pins`; users need Downloads-style destinations |

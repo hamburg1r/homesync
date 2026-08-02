@@ -4,6 +4,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
@@ -230,5 +231,71 @@ void main() {
     expect(files.first.availabilityMode, AvailabilityMode.pinned);
     // Bytes still absent until materialize download.
     expect(files.first.hasLocalBytes, isFalse);
+  });
+
+  test('pin to custom path; keepOnPcOnly deletes local file', () async {
+    const payload = 'custom dest\n';
+    final hash =
+        'ccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb';
+    final destRoot = Directory.systemTemp.createTempSync('homesync_pin_dest_');
+
+    harness = await TestCatalogHarness.open(
+      MockClient((request) async {
+        if (request.method == 'POST' && request.url.path.endsWith('/devices')) {
+          return deviceOkResponse();
+        }
+        if (request.method == 'GET' &&
+            request.url.path.contains('/catalog/delta')) {
+          return http.Response(
+            '''
+{
+  "next_cursor": "v1:a|f1",
+  "files": [${catalogFileJson(id: 'f1', title: 'photo.jpg', updatedAt: 'a', contentHash: hash, sizeBytes: payload.length)}],
+  "tags": [],
+  "file_tags": [],
+  "paths": [],
+  "availability": []
+}
+''',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'PUT' &&
+            request.url.path.contains('/availability/')) {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          return availabilityOkResponse(
+            fileId: 'f1',
+            mode: body['mode'] as String,
+          );
+        }
+        if (request.method == 'GET' && request.url.path.contains('/blobs/')) {
+          return http.Response(payload, 200);
+        }
+        return http.Response('unexpected', 500);
+      }),
+    );
+
+    expect((await harness.sync.sync()).ok, isTrue);
+    final pinned = await harness.pinService.pin(
+      'f1',
+      destination: PinDestination(
+        directory: destRoot.path,
+        fileName: 'photo.jpg',
+      ),
+    );
+    expect(pinned.hasLocalBytes, isTrue);
+    expect(await harness.blobs.has('blake3', hash), isFalse);
+    final path = await harness.repository.pinLocalPathForFileId('f1');
+    expect(path, endsWith('photo.jpg'));
+    expect(File(path!).existsSync(), isTrue);
+
+    final kept = await harness.pinService.keepOnPcOnly('f1');
+    expect(kept.availabilityMode, AvailabilityMode.listed);
+    expect(kept.hasLocalBytes, isFalse);
+    expect(File(path).existsSync(), isFalse);
+    expect(await harness.repository.pinLocalPathForFileId('f1'), isNull);
+
+    await destRoot.delete(recursive: true);
   });
 }

@@ -18,6 +18,7 @@ part 'catalog_database.g.dart';
     TrackingRules,
     LocalTrackedFiles,
     PinServerBinds,
+    PinLocalPaths,
   ],
 )
 @lazySingleton
@@ -32,7 +33,7 @@ class CatalogDatabase extends _$CatalogDatabase {
   static const dbName = 'homesync_catalog_v2';
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -52,6 +53,9 @@ class CatalogDatabase extends _$CatalogDatabase {
           }
           if (from < 5) {
             await m.createTable(pinServerBinds);
+          }
+          if (from < 6) {
+            await m.createTable(pinLocalPaths);
           }
         },
       );
