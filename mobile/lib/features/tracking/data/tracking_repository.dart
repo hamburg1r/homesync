@@ -113,6 +113,22 @@ class TrackingRepository {
     return rows.map(_localFromRow).toList();
   }
 
+  /// Pending or failed tracked files waiting for phone→PC ingest.
+  Future<List<LocalTrackedFile>> listNeedingIngest() async {
+    final rows = await (_db.select(_db.localTrackedFiles)
+          ..where(
+            (t) =>
+                t.ruleId.isNotNull() &
+                t.ingestStatus.isIn([
+                  IngestStatus.pending.wire,
+                  IngestStatus.failed.wire,
+                ]),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.seenAt)]))
+        .get();
+    return rows.map(_localFromRow).toList();
+  }
+
   Future<List<LocalTrackedFile>> listUntracked() async {
     final rows = await (_db.select(_db.localTrackedFiles)
           ..where((t) => t.ruleId.isNull())

@@ -8,6 +8,7 @@ import 'package:homesync_mobile/features/catalog/data/local_db/catalog_database.
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/local_thumb_store.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
@@ -188,6 +189,7 @@ class TestCatalogHarness {
     required this.ingestService,
     required this.tracking,
     required this.scanner,
+    required this.backgroundIngest,
     required this.blobRoot,
     required this.thumbRoot,
     required this.scanRoot,
@@ -208,6 +210,7 @@ class TestCatalogHarness {
   final IngestService ingestService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
+  final BackgroundIngestRunner backgroundIngest;
   final Directory blobRoot;
   final Directory thumbRoot;
   final Directory scanRoot;
@@ -267,6 +270,11 @@ class TestCatalogHarness {
       log: log,
       scanRoots: [scan],
     );
+    final backgroundIngest = BackgroundIngestRunner(
+      scanner: scanner,
+      ingest: ingestService,
+      log: log,
+    );
     return TestCatalogHarness(
       log: log,
       settings: settings,
@@ -283,6 +291,7 @@ class TestCatalogHarness {
       ingestService: ingestService,
       tracking: tracking,
       scanner: scanner,
+      backgroundIngest: backgroundIngest,
       blobRoot: root,
       thumbRoot: tRoot,
       scanRoot: scan,

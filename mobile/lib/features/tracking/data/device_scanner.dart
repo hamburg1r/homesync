@@ -57,7 +57,6 @@ class DeviceScanner {
 
     var seen = 0;
     var tracked = 0;
-    final pendingIngest = <LocalTrackedFile>[];
     final seenPaths = <String>{};
 
     Future<void> consider({
@@ -89,7 +88,6 @@ class DeviceScanner {
               alreadySynced ? IngestStatus.synced : IngestStatus.pending,
         );
         await repository.upsertLocalFile(row);
-        if (!alreadySynced) pendingIngest.add(row);
       } else {
         await repository.upsertLocalFile(
           LocalTrackedFile(
@@ -139,45 +137,8 @@ class DeviceScanner {
     if (onIndexed != null) {
       await onIndexed();
     }
-    if (ingestMatches && pendingIngest.isNotEmpty) {
-      final total = pendingIngest.length;
-      for (var i = 0; i < total; i++) {
-        final row = pendingIngest[i];
-        try {
-          final ruleName = rules
-              .firstWhere(
-                (r) => r.id == row.ruleId,
-                orElse: () => TrackingRule(
-                  id: row.ruleId!,
-                  name: 'misc',
-                  kind: TrackingRuleKind.regex,
-                  patternOrUri: '',
-                  enabled: true,
-                  createdAt: now,
-                ),
-              )
-              .name;
-          final file = await ingest.ingestFile(
-            File(row.localPath),
-            title: row.title,
-            sourceKind: row.sourceKind,
-            relativePath:
-                'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
-            index: i + 1,
-            total: total,
-            onProgress: onProgress,
-          );
-          await repository.markSynced(
-            localPath: row.localPath,
-            fileId: file.fileId,
-            contentHash: file.contentHash,
-          );
-          ingested += 1;
-        } catch (e) {
-          log.warn('tracking', 'ingest failed ${row.localPath}: $e');
-          await repository.markFailed(row.localPath);
-        }
-      }
+    if (ingestMatches) {
+      ingested = await ingestPending(onProgress: onProgress);
     }
 
     log.info(
@@ -185,6 +146,44 @@ class DeviceScanner {
       'scan seen=$seen tracked=$tracked ingested=$ingested',
     );
     return ScanResult(seen: seen, tracked: tracked, ingested: ingested);
+  }
+
+  /// Upload pending/failed tracked files (and leave durable queue flush to caller).
+  Future<int> ingestPending({IngestProgressCallback? onProgress}) async {
+    final rules =
+        (await repository.listRules()).where((r) => r.enabled).toList();
+    final ruleNames = {for (final r in rules) r.id: r.name};
+    final pending = await repository.listNeedingIngest();
+    if (pending.isEmpty) return 0;
+
+    var ingested = 0;
+    final total = pending.length;
+    for (var i = 0; i < total; i++) {
+      final row = pending[i];
+      try {
+        final ruleName = ruleNames[row.ruleId] ?? 'misc';
+        final file = await ingest.ingestFile(
+          File(row.localPath),
+          title: row.title,
+          sourceKind: row.sourceKind,
+          relativePath:
+              'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          index: i + 1,
+          total: total,
+          onProgress: onProgress,
+        );
+        await repository.markSynced(
+          localPath: row.localPath,
+          fileId: file.fileId,
+          contentHash: file.contentHash,
+        );
+        ingested += 1;
+      } catch (e) {
+        log.warn('tracking', 'ingest failed ${row.localPath}: $e');
+        await repository.markFailed(row.localPath);
+      }
+    }
+    return ingested;
   }
 
   TrackingRule? _matchRule({

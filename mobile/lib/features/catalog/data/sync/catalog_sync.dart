@@ -51,6 +51,7 @@ class CatalogSync {
   Future<SyncResult> sync({
     int pageLimit = 500,
     IngestProgressCallback? onIngestProgress,
+    bool flushIngestQueue = true,
   }) {
     if (_inFlight != null) {
       log.fine('sync', 'joining in-flight sync');
@@ -59,6 +60,7 @@ class CatalogSync {
     final future = _doSync(
       pageLimit: pageLimit,
       onIngestProgress: onIngestProgress,
+      flushIngestQueue: flushIngestQueue,
     );
     _inFlight = future.whenComplete(() {
       _inFlight = null;
@@ -93,6 +95,7 @@ class CatalogSync {
   Future<SyncResult> _doSync({
     required int pageLimit,
     IngestProgressCallback? onIngestProgress,
+    bool flushIngestQueue = true,
   }) async {
     api.refreshBaseUrlFromSettings();
     try {
@@ -102,8 +105,11 @@ class CatalogSync {
         name: settings.deviceName,
       );
 
-      // Blobs first (queue order), then pull catalog.
-      final flushed = await ingest.flushPending(onProgress: onIngestProgress);
+      // Blobs first (queue order), then pull catalog — unless deferred to
+      // BackgroundIngestRunner so UI refresh is not blocked by uploads.
+      final flushed = flushIngestQueue
+          ? await ingest.flushPending(onProgress: onIngestProgress)
+          : 0;
 
       var cursor = await repository.getDeltaCursor();
       var pages = 0;

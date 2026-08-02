@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:homesync_mobile/app/app.dart';
 import 'package:homesync_mobile/app/injection.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  initBackgroundIngestService();
   await _boot();
 }
 

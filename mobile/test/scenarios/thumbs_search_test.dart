@@ -113,6 +113,7 @@ void main() {
       thumbService: harness.thumbService,
       tracking: harness.tracking,
       scanner: harness.scanner,
+      backgroundIngest: harness.backgroundIngest,
       settings: harness.settings,
       log: harness.log,
     );

@@ -8,6 +8,7 @@ import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
@@ -121,6 +122,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.thumbService,
     required this.tracking,
     required this.scanner,
+    required this.backgroundIngest,
     required this.settings,
     required this.log,
   }) : super(CatalogState(syncEnabled: settings.syncEnabled)) {
@@ -138,6 +140,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   final ThumbService thumbService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
+  final BackgroundIngestRunner backgroundIngest;
   final SettingsStore settings;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
@@ -433,13 +436,17 @@ class CatalogCubit extends Cubit<CatalogState> {
 
     void onIngest(IngestFileProgress p) => _emitIngestProgress(p);
 
-    final result = await sync.sync(onIngestProgress: onIngest);
+    // Catalog delta only — uploads run via [backgroundIngest] so refresh
+    // returns while hashing/upload continues (Android FG notification).
+    final result = await sync.sync(
+      onIngestProgress: onIngest,
+      flushIngestQueue: false,
+    );
     if (isClosed) return;
 
-    // Scan + ingest when rules exist (no-op if empty); one file at a time.
     try {
       await scanner.scanAndIngest(
-        onProgress: onIngest,
+        ingestMatches: false,
         onIndexed: () => _emitBrowseList(),
       );
     } catch (e) {
@@ -454,11 +461,8 @@ class CatalogCubit extends Cubit<CatalogState> {
         state.copyWith(
           refreshing: false,
           clearStatusMessage: true,
-          clearIngestProgress: true,
         ),
       );
-      _lastIngestProgress = null;
-      _lastIngestProgressEmit = null;
       await _emitBrowseList();
     } else {
       final err = result.error?.toString() ?? 'sync failed';
@@ -466,17 +470,33 @@ class CatalogCubit extends Cubit<CatalogState> {
       emit(
         state.copyWith(
           refreshing: false,
-          clearIngestProgress: true,
           statusMessage: err,
           viewState: files.isEmpty
               ? CatalogViewState.error
               : CatalogViewState.degraded,
         ),
       );
-      _lastIngestProgress = null;
-      _lastIngestProgressEmit = null;
       await _emitBrowseList();
     }
+
+    _kickBackgroundIngest();
+  }
+
+  void _kickBackgroundIngest() {
+    unawaited(
+      backgroundIngest.kick(
+        onProgress: _emitIngestProgress,
+        onFinished: () async {
+          _lastIngestProgress = null;
+          _lastIngestProgressEmit = null;
+          if (isClosed) return;
+          emit(state.copyWith(clearIngestProgress: true));
+          final files = await repository.listActiveFiles();
+          _catalogFiles = files;
+          await _emitBrowseList();
+        },
+      ),
+    );
   }
 
   Future<void> onRulesChanged() async {
@@ -488,15 +508,14 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
     try {
       await scanner.scanAndIngest(
-        onProgress: _emitIngestProgress,
+        ingestMatches: false,
         onIndexed: () => _emitBrowseList(),
       );
-    } finally {
-      if (!isClosed) emit(state.copyWith(clearIngestProgress: true));
-      _lastIngestProgress = null;
-      _lastIngestProgressEmit = null;
+    } catch (e) {
+      log.warn('catalog', 'tracking scan failed: $e');
     }
     await _emitBrowseList();
+    _kickBackgroundIngest();
   }
 
   Future<String?> pinFile(
