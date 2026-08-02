@@ -58,7 +58,7 @@ class CatalogPage extends StatelessWidget {
           onOpenSettings: () => _openSettings(context),
           onPin: (file) => _bringToPhone(context, file),
           onUnpin: (file) =>
-              context.read<CatalogCubit>().keepOnPcOnly(file.fileId),
+              context.read<CatalogCubit>().removeFromDevice(file.fileId),
           onDeleteFromPc: (file) =>
               context.read<CatalogCubit>().deleteFromPc(file.fileId),
           onBoundToServer: (file, bound) => context
@@ -207,6 +207,8 @@ class CatalogBrowseView extends StatelessWidget {
         return 'Tracked on device';
       case BrowseMode.untrackedOnDevice:
         return 'Untracked';
+      case BrowseMode.removedFromPc:
+        return 'Removed from PC';
     }
   }
 
@@ -272,6 +274,16 @@ class CatalogBrowseView extends StatelessWidget {
                 selected: browseMode == BrowseMode.untrackedOnDevice,
                 onTap: () {
                   onSelectBrowse?.call(BrowseMode.untrackedOnDevice);
+                  Navigator.pop(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Removed from PC'),
+                subtitle: const Text('Soft-deleted; may still be on device'),
+                selected: browseMode == BrowseMode.removedFromPc,
+                onTap: () {
+                  onSelectBrowse?.call(BrowseMode.removedFromPc);
                   Navigator.pop(context);
                 },
               ),
@@ -425,7 +437,10 @@ class CatalogBrowseView extends StatelessWidget {
                   subtitle: browseMode == BrowseMode.allCatalog
                       ? 'Index a library on the PC, then pull to refresh. '
                           'Or add tracking rules in Settings to upload from this phone.'
-                      : 'Nothing in this view. Pull to refresh or change drawer filter.',
+                      : browseMode == BrowseMode.removedFromPc
+                          ? 'No soft-deleted files in the local catalog. '
+                              'Remove from PC (or delete on the server) to see them here.'
+                          : 'Nothing in this view. Pull to refresh or change drawer filter.',
                   actionLabel: 'Sync now',
                   onAction: onRefresh == null ? null : () => onRefresh!(),
                 ),
@@ -561,10 +576,12 @@ class _FileTile extends StatelessWidget {
     final typeLabel = file.mimeType ?? 'unknown type';
     final sizeLabel = _formatBytes(file.sizeBytes);
     final tags = file.tags.isEmpty ? 'no tags' : file.tags.join(', ');
-    final modeLabel = file.availabilityMode.wire;
-    final chipColor = file.isPinned
-        ? theme.colorScheme.primaryContainer
-        : theme.colorScheme.surfaceContainerHighest;
+    final modeLabel = file.isDeleted ? 'removed' : file.availabilityMode.wire;
+    final chipColor = file.isDeleted
+        ? theme.colorScheme.errorContainer
+        : file.isPinned
+            ? theme.colorScheme.primaryContainer
+            : theme.colorScheme.surfaceContainerHighest;
     final provenance = file.provenanceSubtitle;
     final subtitle = provenance == null
         ? '$typeLabel · $sizeLabel · $tags'
@@ -695,7 +712,8 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
         title: const Text('Remove from PC?'),
         content: Text(
           'Soft-delete “${widget.file.displayName}” on the server. '
-          'It will disappear from catalogs; blob GC is not run yet.',
+          'It leaves the main catalog and appears under Removed from PC. '
+          'Blob GC is not run yet.',
         ),
         actions: [
           TextButton(
@@ -739,10 +757,11 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
     final file = widget.file;
     final busy = widget.busy;
     final bringLabel = file.isGhost ? 'Bring to phone' : 'Pin';
-    final canDeleteFromPc =
-        widget.onDeleteFromPc != null && !file.fileId.startsWith('local:');
+    final canDeleteFromPc = widget.onDeleteFromPc != null &&
+        !file.isDeleted &&
+        !file.fileId.startsWith('local:');
     final showBoundToggle =
-        file.isPinned && widget.onBoundToServer != null;
+        file.isPinned && !file.isDeleted && widget.onBoundToServer != null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       child: Column(
@@ -758,8 +777,13 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                     color: Theme.of(context).colorScheme.primary,
                   ),
             ),
-          Text('Availability: ${file.availabilityMode.wire}'
-              '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'),
+          Text(
+            file.isDeleted
+                ? 'Removed from PC'
+                    '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'
+                : 'Availability: ${file.availabilityMode.wire}'
+                    '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}',
+          ),
           Text('Type: ${file.mimeType ?? "unknown"}'),
           Text('Size: ${_formatBytes(file.sizeBytes)}'),
           if (widget.localPathFuture != null)
@@ -822,7 +846,8 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                   icon: const Icon(Icons.open_in_new),
                   label: const Text('Open'),
                 ),
-              if (!file.isPinned &&
+              if (!file.isDeleted &&
+                  !file.isPinned &&
                   widget.onPin != null &&
                   !file.fileId.startsWith('local:'))
                 FilledButton.icon(
@@ -846,7 +871,8 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                   ),
                   label: Text(bringLabel),
                 ),
-              if (file.hasLocalBytes &&
+              if (!file.isDeleted &&
+                  file.hasLocalBytes &&
                   widget.onUnpin != null &&
                   !file.fileId.startsWith('local:'))
                 OutlinedButton.icon(
@@ -888,6 +914,47 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                   icon: const Icon(Icons.phonelink_erase_outlined),
                   label: const Text('Keep on PC only'),
                 ),
+              if (file.isDeleted &&
+                  file.hasLocalBytes &&
+                  widget.onUnpin != null)
+                OutlinedButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Remove from device?'),
+                              content: Text(
+                                'Delete local bytes for “${file.displayName}”. '
+                                'It stays under Removed from PC as metadata only.',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context, false),
+                                  child: const Text('Cancel'),
+                                ),
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(context, true),
+                                  child: const Text('Remove from device'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (ok != true || !context.mounted) return;
+                          final err = await widget.onUnpin!(file);
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                            if (err != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(err)),
+                              );
+                            }
+                          }
+                        },
+                  icon: const Icon(Icons.phonelink_erase_outlined),
+                  label: const Text('Remove from device'),
+                ),
               if (canDeleteFromPc)
                 OutlinedButton.icon(
                   onPressed: busy ? null : () => _confirmDelete(context),
@@ -900,7 +967,12 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                     style: TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
                 ),
-              if (!file.hasLocalBytes)
+              if (file.isDeleted && !file.hasLocalBytes)
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Removed from PC — metadata only'),
+                )
+              else if (!file.hasLocalBytes)
                 TextButton(
                   onPressed: () => Navigator.pop(context),
                   child: const Text('Listed only — cannot open offline'),

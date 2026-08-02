@@ -88,7 +88,12 @@ abstract class CatalogFile with _$CatalogFile {
     final from = sourceKindLabel(primarySourceKind);
     final parts = <String>[];
     if (from != null) parts.add(from);
-    if (isGhost) {
+    if (isDeleted) {
+      parts.add('removed from PC');
+      if (hasLocalBytes) {
+        parts.add('still on device');
+      }
+    } else if (isGhost) {
       parts.add('on PC only');
     } else if (hasLocalBytes) {
       parts.add('on device');

@@ -104,6 +104,7 @@ class CatalogRepository {
             );
           }
           await clearBoundToServer(file.fileId);
+          await _demoteAvailability(file.fileId, deviceId);
         }
 
         // Default remote files to listed for this device unless server sent a row.
@@ -162,9 +163,20 @@ class CatalogRepository {
             );
       }
 
+      final tombstonedIds = {
+        for (final f in delta.files)
+          if (f.deletedAt != null) f.fileId,
+      };
+
       for (final avail in delta.availability) {
         // Only persist this phone's availability locally.
         if (avail.deviceId != deviceId) continue;
+        // Soft-deleted files are not pinned/cached on the phone.
+        if (tombstonedIds.contains(avail.fileId)) continue;
+        final local = await (_db.select(_db.catalogFiles)
+              ..where((f) => f.fileId.equals(avail.fileId)))
+            .getSingleOrNull();
+        if (local?.deletedAt != null) continue;
         await _db
             .into(_db.catalogAvailability)
             .insertOnConflictUpdate(
@@ -247,7 +259,42 @@ class CatalogRepository {
         exceptFileId: file.fileId,
       );
       await clearBoundToServer(file.fileId);
+      final deviceId = await _identity.ensureDeviceId();
+      await _demoteAvailability(file.fileId, deviceId);
     }
+  }
+
+  /// Soft-deleted files are not pinned/cached anymore — keep mode as listed.
+  Future<void> _demoteAvailability(String fileId, String deviceId) async {
+    await upsertAvailability(
+      fileId: fileId,
+      deviceId: deviceId,
+      mode: AvailabilityMode.listed,
+      updatedAt: DateTime.now().toUtc().toIso8601String(),
+    );
+  }
+
+  /// Drop local materialization for a tombstoned (or any) file without
+  /// talking to the server. Catalog row stays.
+  Future<void> discardLocalBytes(CatalogFile file) async {
+    await clearPinLocalPath(file.fileId);
+    await _deleteBlobIfUnreferenced(
+      algo: file.hashAlgo,
+      contentHash: file.contentHash,
+      exceptFileId: file.fileId,
+    );
+    final origin = await originPathForFileId(file.fileId);
+    if (origin != null) {
+      final originFile = File(origin);
+      if (await originFile.exists()) {
+        await originFile.delete();
+        _log.info('catalog', 'discarded origin path $origin');
+      }
+    }
+    await clearBoundToServer(file.fileId);
+    final deviceId = await _identity.ensureDeviceId();
+    await _demoteAvailability(file.fileId, deviceId);
+    _log.info('catalog', 'discarded local bytes ${file.fileId}');
   }
 
   /// Opt-in: PC tombstone also deletes this pin's local bytes.
@@ -364,6 +411,18 @@ class CatalogRepository {
           ..where((f) => f.deletedAt.isNull())
           ..orderBy([
             (f) => OrderingTerm.desc(f.updatedAt),
+            (f) => OrderingTerm.desc(f.fileId),
+          ]))
+        .get();
+    return _mapFilesWithTags(rows);
+  }
+
+  /// Soft-deleted rows still mirrored locally (drawer: Removed from PC).
+  Future<List<CatalogFile>> listTombstonedFiles() async {
+    final rows = await (_db.select(_db.catalogFiles)
+          ..where((f) => f.deletedAt.isNotNull())
+          ..orderBy([
+            (f) => OrderingTerm.desc(f.deletedAt),
             (f) => OrderingTerm.desc(f.fileId),
           ]))
         .get();

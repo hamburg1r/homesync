@@ -4,6 +4,8 @@ enum BrowseMode {
   group,
   trackedOnDevice,
   untrackedOnDevice,
+  /// Soft-deleted on the PC (`deleted_at` set); may still have local bytes.
+  removedFromPc,
 }
 
 enum TrackingRuleKind { regex, folder, file }

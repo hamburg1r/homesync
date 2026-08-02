@@ -184,6 +184,8 @@ Record important choices here as they happen.
 | 2026-08-03 | Milestone 7: Pillow thumbs via uv; GET /v1/thumbs; has_thumb hint; GET /v1/files?q= | Listed-mode JPEG cache by content hash; basic LIKE search (FTS Later) |
 | 2026-08-03 | Phone: sync pause + Remove from PC + file tracking rules | Pause skips delta/ingest; soft-delete via existing DELETE; single-path rules |
 | 2026-08-03 | Phone `pin_server_binds`: Bound to server → delete pin on tombstone | Default keeps local bytes after PC soft-delete; opt-in for pinned only |
+| 2026-08-03 | Drawer **Removed from PC** lists soft-deleted catalog rows | Tombstones stay out of All; bytes may remain on device when unbound |
+| 2026-08-03 | Tombstone demotes local availability; Remove from device discards bytes | Stale `pinned` chip on deleted rows; local discard needs no availability API |
 | 2026-08-03 | Phone→PC ingest from original path only (no `homesync_pins` copy) | Avoid duplicating camera/Downloads under app storage; pin store stays PC→phone |
 | 2026-08-03 | Resumable blob uploads: `POST/PATCH /v1/blob-uploads` + offset ack | Large-folder stalls; reconnect resumes; 4 MiB chunks; 1h chunk timeout; partials ≤7d |
 | 2026-08-03 | File detail shows path; Open uses Android VIEW intent (`open_filex`) | In-app text preview was a dead end; system apps handle mime types |

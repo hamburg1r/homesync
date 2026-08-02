@@ -1,7 +1,7 @@
 /// Milestone 6 client exit check: ghost listing + bring-to-phone restore.
 ///
 /// Delete local bytes (unpin) → still listed with provenance → restore via pin.
-/// PC soft-delete tombstone drops active listing and clears local bytes.
+/// PC soft-delete tombstone drops active listing (still under Removed from PC).
 library;
 
 import 'dart:convert';
@@ -163,10 +163,26 @@ void main() {
     expect(await harness.blobs.has('blake3', hash), isTrue);
     expect(await harness.repository.listActiveFiles(), hasLength(1));
 
-    // Default: unbound — tombstone drops listing but keeps pin bytes.
+    // Default: unbound — tombstone drops active listing but keeps pin bytes.
     await harness.sync.sync();
     expect(await harness.repository.listActiveFiles(), isEmpty);
     expect(await harness.blobs.has('blake3', hash), isTrue);
+    final removed = await harness.repository.listTombstonedFiles();
+    expect(removed, hasLength(1));
+    expect(removed.first.fileId, 'f1');
+    expect(removed.first.isDeleted, isTrue);
+    expect(removed.first.hasLocalBytes, isTrue);
+    expect(removed.first.availabilityMode, AvailabilityMode.listed);
+    expect(
+      removed.first.provenanceSubtitle,
+      contains('removed from PC'),
+    );
+
+    await harness.repository.discardLocalBytes(removed.first);
+    final after = await harness.repository.listTombstonedFiles();
+    expect(after, hasLength(1));
+    expect(after.first.hasLocalBytes, isFalse);
+    expect(await harness.blobs.has('blake3', hash), isFalse);
   });
 
   test('bound to server: tombstone deletes local pin bytes', () async {
@@ -231,6 +247,9 @@ void main() {
     await harness.sync.sync();
     expect(await harness.repository.listActiveFiles(), isEmpty);
     expect(await harness.blobs.has('blake3', hash), isFalse);
+    final removed = await harness.repository.listTombstonedFiles();
+    expect(removed, hasLength(1));
+    expect(removed.first.hasLocalBytes, isFalse);
   });
 
   test('sourceKindLabel covers known kinds', () {

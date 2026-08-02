@@ -306,11 +306,19 @@ class CatalogCubit extends Cubit<CatalogState> {
         files = await _localsToCatalogFiles(await tracking.listTracked());
       case BrowseMode.untrackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listUntracked());
+      case BrowseMode.removedFromPc:
+        files = await repository.listTombstonedFiles();
     }
-    if (state.deviceAndSyncedOnly && state.browseMode != BrowseMode.allCatalog) {
+    if (state.deviceAndSyncedOnly &&
+        state.browseMode != BrowseMode.allCatalog &&
+        state.browseMode != BrowseMode.removedFromPc) {
       files = files
           .where((f) => f.hasLocalBytes && !f.fileId.startsWith('local:'))
           .toList();
+    }
+    if (state.deviceAndSyncedOnly &&
+        state.browseMode == BrowseMode.removedFromPc) {
+      files = files.where((f) => f.hasLocalBytes).toList();
     }
     files = _applySearch(files);
     if (isClosed) return;
@@ -494,13 +502,22 @@ class CatalogCubit extends Cubit<CatalogState> {
   }
 
   /// Keep listing on phone catalog; delete local bytes (PC retains the blob).
-  Future<String?> keepOnPcOnly(String fileId) async {
+  /// Tombstoned files: local-only discard (no availability API).
+  Future<String?> removeFromDevice(String fileId) async {
     if (fileId.startsWith('local:')) {
       return 'Not a catalog file';
     }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
-      await pinService.keepOnPcOnly(fileId);
+      final file = await repository.getFile(fileId);
+      if (file == null) {
+        return 'file not found';
+      }
+      if (file.isDeleted) {
+        await repository.discardLocalBytes(file);
+      } else {
+        await pinService.keepOnPcOnly(fileId);
+      }
       final files = await repository.listActiveFiles();
       _catalogFiles = files;
       if (!isClosed) {
@@ -509,7 +526,7 @@ class CatalogCubit extends Cubit<CatalogState> {
       await _emitBrowseList();
       return null;
     } catch (e) {
-      log.warn('catalog', 'keep on PC only failed: $e');
+      log.warn('catalog', 'remove from device failed: $e');
       if (!isClosed) {
         emit(
           state.copyWith(
@@ -522,7 +539,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
   }
 
-  Future<String?> unpinFile(String fileId) => keepOnPcOnly(fileId);
+  /// Alias: keep PC catalog listing; drop local bytes.
+  Future<String?> keepOnPcOnly(String fileId) => removeFromDevice(fileId);
+
+  Future<String?> unpinFile(String fileId) => removeFromDevice(fileId);
 
   /// Soft-delete on the PC; drops local listing + unreferenced pin bytes.
   Future<String?> deleteFromPc(String fileId) async {

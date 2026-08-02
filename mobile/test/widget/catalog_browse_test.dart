@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_page.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 
 import '../support/fixtures.dart';
 
@@ -123,5 +124,28 @@ void main() {
     );
     await tester.pump();
     expect(find.text('Could not reach catalog'), findsOneWidget);
+  });
+
+  testWidgets('drawer lists Removed from PC browse mode', (tester) async {
+    BrowseMode? selected;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CatalogBrowseView(
+          state: CatalogViewState.ready,
+          files: const [],
+          browseMode: BrowseMode.removedFromPc,
+          onSelectBrowse: (mode, {ruleId, title}) => selected = mode,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Removed from PC'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Open navigation menu'));
+    await tester.pumpAndSettle();
+    expect(find.text('Removed from PC'), findsWidgets);
+    await tester.tap(find.text('Removed from PC').last);
+    await tester.pumpAndSettle();
+    expect(selected, BrowseMode.removedFromPc);
   });
 }
