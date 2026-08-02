@@ -1,9 +1,10 @@
+import 'package:flutter/material.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Persisted app settings (API base URL, device display name).
+/// Persisted app settings (API base URL, device display name, appearance).
 /// Registered via [AppRegisterModule] (`@preResolve`).
-class SettingsStore {
+class SettingsStore extends ChangeNotifier {
   SettingsStore(this._prefs, this._log);
 
   final SharedPreferences _prefs;
@@ -15,10 +16,15 @@ class SettingsStore {
   /// Default pin disk budget: 512 MiB.
   static const defaultPinBudgetBytes = 512 * 1024 * 1024;
 
+  /// Brand seed when dynamic color is off or unavailable (pre-Android 12).
+  static const brandSeed = Color(0xFF2F5D50);
+
   static const _kBaseUrl = 'base_url';
   static const _kDeviceName = 'device_name';
   static const _kDeviceId = 'device_id';
   static const _kPinBudgetBytes = 'pin_budget_bytes';
+  static const _kThemeMode = 'theme_mode';
+  static const _kUseDynamicColor = 'use_dynamic_color';
 
   /// Prefer DI `@preResolve`; available for tests.
   static Future<SettingsStore> open(AppLog log) async {
@@ -60,6 +66,39 @@ class SettingsStore {
     }
     await _prefs.setInt(_kPinBudgetBytes, value);
     _log.info('settings', 'pin_budget_bytes set to $value');
+  }
+
+  /// `system` (default), `light`, or `dark`.
+  ThemeMode get themeMode {
+    switch (_prefs.getString(_kThemeMode)) {
+      case 'light':
+        return ThemeMode.light;
+      case 'dark':
+        return ThemeMode.dark;
+      default:
+        return ThemeMode.system;
+    }
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    final wire = switch (mode) {
+      ThemeMode.light => 'light',
+      ThemeMode.dark => 'dark',
+      ThemeMode.system => 'system',
+    };
+    await _prefs.setString(_kThemeMode, wire);
+    _log.info('settings', 'theme_mode set to $wire');
+    notifyListeners();
+  }
+
+  /// When true (default), use wallpaper/system dynamic ColorScheme on Android 12+.
+  bool get useDynamicColor =>
+      _prefs.getBool(_kUseDynamicColor) ?? true;
+
+  Future<void> setUseDynamicColor(bool value) async {
+    await _prefs.setBool(_kUseDynamicColor, value);
+    _log.info('settings', 'use_dynamic_color set to $value');
+    notifyListeners();
   }
 
   /// Low-level string prefs for durable queues (ingest, etc.).

@@ -88,32 +88,10 @@ class _SettingsSheetState extends State<SettingsSheet> {
   }
 
   Future<void> _addFolderRule() async {
-    final nameCtrl = TextEditingController();
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Folder rule name'),
-        content: TextField(
-          controller: nameCtrl,
-          decoration: const InputDecoration(
-            labelText: 'Group name',
-            hintText: 'misc',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, nameCtrl.text),
-            child: const Text('Pick folder'),
-          ),
-        ],
-      ),
+      builder: (context) => const _FolderNameDialog(),
     );
-    nameCtrl.dispose();
     if (name == null || !mounted) return;
 
     final path = await FilePicker.getDirectoryPath();
@@ -184,6 +162,50 @@ class _SettingsSheetState extends State<SettingsSheet> {
             const SizedBox(height: 16),
             FilledButton(onPressed: _save, child: const Text('Save & sync')),
             const Divider(height: 32),
+            Text('Appearance', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            Text(
+              'Theme follows the system by default. Dynamic color uses '
+              'wallpaper colors on Android 12+ (Material You).',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            SegmentedButton<ThemeMode>(
+              segments: const [
+                ButtonSegment(
+                  value: ThemeMode.system,
+                  label: Text('System'),
+                  icon: Icon(Icons.brightness_auto),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.light,
+                  label: Text('Light'),
+                  icon: Icon(Icons.light_mode_outlined),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.dark,
+                  label: Text('Dark'),
+                  icon: Icon(Icons.dark_mode_outlined),
+                ),
+              ],
+              selected: {widget.settings.themeMode},
+              onSelectionChanged: (selected) async {
+                await widget.settings.setThemeMode(selected.first);
+                setState(() {});
+              },
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Dynamic color'),
+              subtitle: const Text('Material You from wallpaper'),
+              value: widget.settings.useDynamicColor,
+              onChanged: (value) async {
+                await widget.settings.setUseDynamicColor(value);
+                setState(() {});
+              },
+            ),
+            const Divider(height: 32),
             Text('Tracking rules', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 4),
             Text(
@@ -253,6 +275,51 @@ class _RuleDraft {
 
   final String name;
   final String patternOrUri;
+}
+
+class _FolderNameDialog extends StatefulWidget {
+  const _FolderNameDialog();
+
+  @override
+  State<_FolderNameDialog> createState() => _FolderNameDialogState();
+}
+
+class _FolderNameDialogState extends State<_FolderNameDialog> {
+  final _name = TextEditingController();
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Folder rule name'),
+      content: TextField(
+        controller: _name,
+        decoration: const InputDecoration(
+          labelText: 'Group name',
+          hintText: 'misc',
+          border: OutlineInputBorder(),
+        ),
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (value) => Navigator.pop(context, value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _name.text),
+          child: const Text('Pick folder'),
+        ),
+      ],
+    );
+  }
 }
 
 class _AddRuleDialog extends StatefulWidget {

@@ -17,7 +17,7 @@ class DeviceScanner {
     required this.repository,
     required this.ingest,
     required this.log,
-    List<Directory>? scanRoots,
+    @ignoreParam List<Directory>? scanRoots,
   }) : _scanRootsOverride = scanRoots;
 
   final TrackingRepository repository;
@@ -49,8 +49,7 @@ class DeviceScanner {
 
     for (final root in roots) {
       if (!await root.exists()) continue;
-      await for (final entity in root.list(recursive: true, followLinks: false)) {
-        if (entity is! File) continue;
+      await for (final entity in _listFilesSafe(root)) {
         // Skip hidden / Android noise.
         final path = entity.path;
         if (path.contains('/.')) continue;
@@ -151,11 +150,7 @@ class DeviceScanner {
   }) {
     final norm = p.normalize(path);
     for (final folder in folderRules) {
-      final root = p.normalize(folder.patternOrUri);
-      if (norm == root || norm.startsWith('$root${Platform.pathSeparator}') ||
-          norm.startsWith('$root/')) {
-        return folder;
-      }
+      if (_isUnderRoot(norm, folder.patternOrUri)) return folder;
     }
     for (final entry in regexRules) {
       if (entry.pattern.matchesPath(norm)) return entry.rule;
@@ -183,26 +178,78 @@ class DeviceScanner {
     if (override != null) return override;
 
     final dirs = <Directory>[];
-    // Primary shared storage (full walk for regex rules).
-    const candidates = [
-      '/storage/emulated/0',
-      '/sdcard',
-    ];
-    for (final c in candidates) {
-      final d = Directory(c);
-      if (await d.exists()) {
-        dirs.add(d);
-        break;
+    // Full shared-storage walk only when regex rules need it.
+    final hasRegex = rules.any((r) => r.kind == TrackingRuleKind.regex);
+    if (hasRegex) {
+      const candidates = [
+        '/storage/emulated/0',
+        '/sdcard',
+      ];
+      for (final c in candidates) {
+        final d = Directory(c);
+        if (await d.exists()) {
+          dirs.add(d);
+          break;
+        }
       }
     }
-    // Always include explicit folder-rule roots.
+    // Explicit folder-rule roots (skip if already covered by a parent root).
     for (final r in rules.where((r) => r.kind == TrackingRuleKind.folder)) {
       final d = Directory(r.patternOrUri);
-      if (await d.exists() && !dirs.any((x) => x.path == d.path)) {
-        dirs.add(d);
-      }
+      if (!await d.exists()) continue;
+      final covered = dirs.any((x) => _isUnderRoot(d.path, x.path));
+      if (!covered) dirs.add(d);
     }
     return dirs;
+  }
+
+  /// Breadth-first walk that skips inaccessible / privacy-sandbox dirs.
+  Stream<File> _listFilesSafe(Directory root) async* {
+    final queue = <Directory>[root];
+    while (queue.isNotEmpty) {
+      final dir = queue.removeLast();
+      final Stream<FileSystemEntity> listing;
+      try {
+        listing = dir.list(followLinks: false);
+      } on FileSystemException catch (e) {
+        log.warn('tracking', 'skip inaccessible ${dir.path}: $e');
+        continue;
+      }
+      await for (final entity in listing.handleError(
+        (Object e, StackTrace _) {
+          log.warn('tracking', 'skip inaccessible under ${dir.path}: $e');
+        },
+        test: (e) => e is FileSystemException,
+      )) {
+        if (entity is File) {
+          yield entity;
+        } else if (entity is Directory) {
+          if (_shouldSkipDir(entity.path)) continue;
+          queue.add(entity);
+        }
+      }
+    }
+  }
+
+  bool _shouldSkipDir(String path) {
+    final norm = p.normalize(path);
+    // App-private sandboxes are unreadable without special access and abort
+    // naive recursive listing on Android 11+.
+    if (norm.contains('${Platform.pathSeparator}Android${Platform.pathSeparator}data') ||
+        norm.contains('${Platform.pathSeparator}Android${Platform.pathSeparator}obb') ||
+        norm.endsWith('${Platform.pathSeparator}Android${Platform.pathSeparator}data') ||
+        norm.endsWith('${Platform.pathSeparator}Android${Platform.pathSeparator}obb')) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _isUnderRoot(String path, String root) {
+    final norm = p.normalize(path);
+    final base = p.normalize(root);
+    return norm == base ||
+        norm.startsWith('$base${Platform.pathSeparator}') ||
+        norm.startsWith('$base/');
   }
 }
 

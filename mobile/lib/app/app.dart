@@ -1,6 +1,8 @@
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/app/injection.dart';
+import 'package:homesync_mobile/app/theme.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_page.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
@@ -10,25 +12,30 @@ class HomesyncApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF2F5D50),
-      brightness: Brightness.light,
-    );
-    return MaterialApp(
-      title: 'Homesync',
-      theme: ThemeData(
-        colorScheme: scheme,
-        useMaterial3: true,
-        appBarTheme: AppBarTheme(
-          backgroundColor: scheme.surface,
-          foregroundColor: scheme.onSurface,
-          elevation: 0,
-          scrolledUnderElevation: 1,
-        ),
-      ),
-      home: BlocProvider(
-        create: (_) => getIt<CatalogCubit>()..start(),
-        child: CatalogPage(settings: getIt<SettingsStore>()),
+    final settings = getIt<SettingsStore>();
+    // Cubit above theme rebuilds so appearance toggles do not reset catalog state.
+    return BlocProvider(
+      create: (_) => getIt<CatalogCubit>()..start(),
+      child: ListenableBuilder(
+        listenable: settings,
+        builder: (context, _) {
+          return DynamicColorBuilder(
+            builder: (lightDynamic, darkDynamic) {
+              final themes = homesyncThemes(
+                useDynamicColor: settings.useDynamicColor,
+                lightDynamic: lightDynamic,
+                darkDynamic: darkDynamic,
+              );
+              return MaterialApp(
+                title: 'Homesync',
+                theme: themes.light,
+                darkTheme: themes.dark,
+                themeMode: settings.themeMode,
+                home: CatalogPage(settings: settings),
+              );
+            },
+          );
+        },
       ),
     );
   }
@@ -47,8 +54,12 @@ class BootstrapErrorApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final themes = homesyncThemes(useDynamicColor: false);
     return MaterialApp(
       title: 'Homesync',
+      theme: themes.light,
+      darkTheme: themes.dark,
+      themeMode: ThemeMode.system,
       home: Scaffold(
         body: Center(
           child: Padding(
