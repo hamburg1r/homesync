@@ -59,6 +59,10 @@ class CatalogPage extends StatelessWidget {
               .read<CatalogCubit>()
               .setBoundToServer(file.fileId, bound: bound),
           onOpen: (file) => _openFile(context, file),
+          onResolveLocalPath: (file) =>
+              context.read<CatalogCubit>().resolveLocalPath(file),
+          onCatalogRelativePath: (file) =>
+              context.read<CatalogCubit>().catalogRelativePath(file),
           onSelectBrowse: (mode, {ruleId, title}) => context
               .read<CatalogCubit>()
               .setBrowseMode(mode, groupRuleId: ruleId, groupTitle: title),
@@ -96,27 +100,11 @@ class CatalogPage extends StatelessWidget {
       return;
     }
 
-    final preview = await cubit.openLocalTextPreview(file);
+    final err = await cubit.openWithSystem(file);
     if (!context.mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(file.displayName),
-        content: SingleChildScrollView(
-          child: Text(
-            preview ??
-                'Pinned locally (${_formatBytes(file.sizeBytes)}). '
-                    'Binary preview not shown.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    }
   }
 }
 
@@ -143,6 +131,8 @@ class CatalogBrowseView extends StatelessWidget {
     this.onDeleteFromPc,
     this.onBoundToServer,
     this.onOpen,
+    this.onResolveLocalPath,
+    this.onCatalogRelativePath,
     this.onSelectBrowse,
     this.onToggleDeviceSynced,
     this.onSearchChanged,
@@ -168,6 +158,8 @@ class CatalogBrowseView extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
+  final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
+  final Future<String?> Function(CatalogFile file)? onCatalogRelativePath;
   final void Function(
     BrowseMode mode, {
     String? ruleId,
@@ -431,6 +423,8 @@ class CatalogBrowseView extends StatelessWidget {
                 onDeleteFromPc: onDeleteFromPc,
                 onBoundToServer: onBoundToServer,
                 onOpen: onOpen,
+                onResolveLocalPath: onResolveLocalPath,
+                onCatalogRelativePath: onCatalogRelativePath,
                 onLoadThumb: onLoadThumb,
               );
             },
@@ -517,6 +511,8 @@ class _FileTile extends StatelessWidget {
     this.onDeleteFromPc,
     this.onBoundToServer,
     this.onOpen,
+    this.onResolveLocalPath,
+    this.onCatalogRelativePath,
     this.onLoadThumb,
   });
 
@@ -527,6 +523,8 @@ class _FileTile extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
+  final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
+  final Future<String?> Function(CatalogFile file)? onCatalogRelativePath;
   final Future<File?> Function(CatalogFile file)? onLoadThumb;
 
   @override
@@ -578,6 +576,8 @@ class _FileTile extends StatelessWidget {
             onDeleteFromPc: onDeleteFromPc,
             onBoundToServer: onBoundToServer,
             onOpen: onOpen,
+            localPathFuture: onResolveLocalPath?.call(file),
+            catalogPathFuture: onCatalogRelativePath?.call(file),
           ),
         );
       },
@@ -632,6 +632,8 @@ class _FileDetailSheet extends StatefulWidget {
     this.onDeleteFromPc,
     this.onBoundToServer,
     this.onOpen,
+    this.localPathFuture,
+    this.catalogPathFuture,
   });
 
   final CatalogFile file;
@@ -641,6 +643,8 @@ class _FileDetailSheet extends StatefulWidget {
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
+  final Future<String?>? localPathFuture;
+  final Future<String?>? catalogPathFuture;
 
   @override
   State<_FileDetailSheet> createState() => _FileDetailSheetState();
@@ -730,6 +734,34 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
               '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'),
           Text('Type: ${file.mimeType ?? "unknown"}'),
           Text('Size: ${_formatBytes(file.sizeBytes)}'),
+          if (widget.localPathFuture != null)
+            FutureBuilder<String?>(
+              future: widget.localPathFuture,
+              builder: (context, snapshot) {
+                final path = snapshot.data;
+                if (path == null || path.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return SelectableText(
+                  'Path: $path',
+                  style: Theme.of(context).textTheme.bodySmall,
+                );
+              },
+            ),
+          if (widget.catalogPathFuture != null)
+            FutureBuilder<String?>(
+              future: widget.catalogPathFuture,
+              builder: (context, snapshot) {
+                final path = snapshot.data;
+                if (path == null || path.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return SelectableText(
+                  'Catalog path: $path',
+                  style: Theme.of(context).textTheme.bodySmall,
+                );
+              },
+            ),
           Text('Hash: ${file.hashAlgo}:${file.contentHash}'),
           if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
           if (file.notes != null && file.notes!.isNotEmpty)

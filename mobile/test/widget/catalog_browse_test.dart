@@ -52,6 +52,42 @@ void main() {
     expect(find.text('Bring to phone'), findsOneWidget);
   });
 
+  testWidgets('file detail shows path when resolver provided', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CatalogBrowseView(
+          state: CatalogViewState.ready,
+          files: const [
+            CatalogFile(
+              fileId: 'f1',
+              contentHash:
+                  'abc0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab',
+              hashAlgo: 'blake3',
+              mimeType: 'text/plain',
+              sizeBytes: 12,
+              title: 'hello.txt',
+              createdAt: '2026-07-31T00:00:00Z',
+              updatedAt: '2026-07-31T00:00:00.000000Z',
+              tags: ['family'],
+              hasLocalBytes: true,
+              availabilityMode: AvailabilityMode.pinned,
+            ),
+          ],
+          onResolveLocalPath: (_) async => '/storage/emulated/0/Download/hello.txt',
+          onCatalogRelativePath: (_) async => 'ingest/download/hello.txt',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.text('hello.txt'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('/storage/emulated/0/Download/hello.txt'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('ingest/download/hello.txt'), findsOneWidget);
+  });
+
   testWidgets('empty and degraded and error states', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(

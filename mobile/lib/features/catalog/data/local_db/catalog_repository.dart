@@ -271,6 +271,36 @@ class CatalogRepository {
     return row?.localPath;
   }
 
+  /// Best catalog relative path for display (provenance), if mirrored.
+  Future<String?> primaryRelativePath(String fileId) async {
+    final path = await _primaryPathRow(fileId);
+    return path?.relativePath;
+  }
+
+  Future<CatalogPathRow?> _primaryPathRow(String fileId) async {
+    final paths = await (_db.select(_db.catalogPaths)
+          ..where((p) => p.fileId.equals(fileId)))
+        .get();
+    if (paths.isEmpty) return null;
+
+    int rank(CatalogPathRow p) {
+      var score = 0;
+      if (p.isCurrent && p.goneAt == null) score += 100;
+      score += switch (p.sourceKind.toLowerCase()) {
+        'whatsapp' => 50,
+        'camera' => 40,
+        'download' => 30,
+        'misc' => 20,
+        'manual' => 10,
+        _ => 0,
+      };
+      return score;
+    }
+
+    paths.sort((a, b) => rank(b).compareTo(rank(a)));
+    return paths.first;
+  }
+
   Future<CatalogFile?> getFile(String fileId) async {
     final row = await (_db.select(_db.catalogFiles)
           ..where((f) => f.fileId.equals(fileId)))
@@ -344,27 +374,9 @@ class CatalogRepository {
 
   /// Prefer current / known provenance for ghost restore labels.
   Future<String?> _primarySourceKind(String fileId) async {
-    final paths = await (_db.select(_db.catalogPaths)
-          ..where((p) => p.fileId.equals(fileId)))
-        .get();
-    if (paths.isEmpty) return null;
-
-    int rank(CatalogPathRow p) {
-      var score = 0;
-      if (p.isCurrent && p.goneAt == null) score += 100;
-      score += switch (p.sourceKind.toLowerCase()) {
-        'whatsapp' => 50,
-        'camera' => 40,
-        'download' => 30,
-        'misc' => 20,
-        'manual' => 10,
-        _ => 0,
-      };
-      return score;
-    }
-
-    paths.sort((a, b) => rank(b).compareTo(rank(a)));
-    final kind = paths.first.sourceKind.trim().toLowerCase();
+    final path = await _primaryPathRow(fileId);
+    if (path == null) return null;
+    final kind = path.sourceKind.trim().toLowerCase();
     if (kind.isEmpty || kind == 'unknown') return null;
     return kind;
   }

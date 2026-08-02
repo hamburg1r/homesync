@@ -161,13 +161,13 @@ class PinService {
         );
   }
 
-  /// Absolute path for open: pin store or phone-origin tracking path.
+  /// Absolute path for open: phone-origin tracking path, else pin store.
   Future<String?> resolveLocalPath(CatalogFile file) async {
+    final origin = await repository.originPathForFileId(file.fileId);
+    if (origin != null && await File(origin).exists()) return origin;
     if (await blobs.has(file.hashAlgo, file.contentHash)) {
       return (await blobs.pathFor(file.hashAlgo, file.contentHash)).path;
     }
-    final origin = await repository.originPathForFileId(file.fileId);
-    if (origin != null && await File(origin).exists()) return origin;
     return null;
   }
 

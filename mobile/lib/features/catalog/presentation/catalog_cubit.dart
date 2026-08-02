@@ -17,6 +17,7 @@ import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 import 'package:injectable/injectable.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 
 enum CatalogViewState { loading, empty, ready, error, degraded }
@@ -507,6 +508,32 @@ class CatalogCubit extends Cubit<CatalogState> {
   /// Returns local bytes when materialised; null if listed-only / missing.
   Future<Uint8List?> openLocalBytes(CatalogFile file) {
     return pinService.openLocalBytes(file);
+  }
+
+  /// Absolute on-device path (origin or pin store), if bytes are present.
+  Future<String?> resolveLocalPath(CatalogFile file) {
+    return pinService.resolveLocalPath(file);
+  }
+
+  /// Catalog relative path from mirrored provenance, if any.
+  Future<String?> catalogRelativePath(CatalogFile file) {
+    return repository.primaryRelativePath(file.fileId);
+  }
+
+  /// Open with the system viewer (Android ACTION_VIEW via FileProvider).
+  Future<String?> openWithSystem(CatalogFile file) async {
+    final path = await resolveLocalPath(file);
+    if (path == null) {
+      return 'No local file path';
+    }
+    try {
+      final result = await OpenFilex.open(path, type: file.mimeType);
+      if (result.type == ResultType.done) return null;
+      return result.message;
+    } catch (e) {
+      log.warn('catalog', 'open with system failed: $e');
+      return e.toString();
+    }
   }
 
   /// Convenience: decode UTF-8 text preview when bytes are present.

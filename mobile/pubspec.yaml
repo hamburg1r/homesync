@@ -30,6 +30,7 @@ dependencies:
   blake3_dart: ^1.0.0
   permission_handler: ^13.0.0
   file_picker: ^11.0.3
+  open_filex: ^4.7.0
 
 dev_dependencies:
   flutter_test:
