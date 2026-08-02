@@ -144,6 +144,8 @@ class CatalogCubit extends Cubit<CatalogState> {
   StreamSubscription<List<TrackingRule>>? _rulesSub;
   List<CatalogFile> _catalogFiles = const [];
   bool _started = false;
+  DateTime? _lastIngestProgressEmit;
+  IngestFileProgress? _lastIngestProgress;
 
   void _onSettingsChanged() {
     if (isClosed) return;
@@ -294,6 +296,27 @@ class CatalogCubit extends Cubit<CatalogState> {
     await _emitBrowseList();
   }
 
+  /// Throttle progress UI updates so hashing/upload does not rebuild every chunk.
+  void _emitIngestProgress(IngestFileProgress p) {
+    if (isClosed) return;
+    final now = DateTime.now();
+    final prev = _lastIngestProgress;
+    final phaseChanged =
+        prev == null ||
+        prev.phase != p.phase ||
+        prev.index != p.index ||
+        prev.total != p.total ||
+        prev.title != p.title;
+    final due = _lastIngestProgressEmit == null ||
+        now.difference(_lastIngestProgressEmit!) >=
+            const Duration(milliseconds: 200);
+    final finishing = p.fraction >= 0.999;
+    if (!phaseChanged && !due && !finishing) return;
+    _lastIngestProgressEmit = now;
+    _lastIngestProgress = p;
+    emit(state.copyWith(ingestProgress: p));
+  }
+
   Future<void> _emitBrowseList() async {
     List<CatalogFile> files;
     switch (state.browseMode) {
@@ -342,7 +365,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   ) async {
     final out = <CatalogFile>[];
     for (final local in locals) {
-      if (local.fileId != null) {
+      if (local.isSynced && local.fileId != null) {
         final catalog = await repository.getFile(local.fileId!);
         if (catalog != null) {
           out.add(catalog);
@@ -350,6 +373,11 @@ class CatalogCubit extends Cubit<CatalogState> {
         }
       }
       final now = local.seenAt;
+      final LocalUploadState? upload = switch (local.ingestStatus) {
+        IngestStatus.pending => LocalUploadState.pending,
+        IngestStatus.failed => LocalUploadState.failed,
+        IngestStatus.synced || IngestStatus.untracked => null,
+      };
       out.add(
         CatalogFile(
           fileId: local.fileId ?? 'local:${local.localPath}',
@@ -364,6 +392,8 @@ class CatalogCubit extends Cubit<CatalogState> {
               ? AvailabilityMode.pinned
               : AvailabilityMode.listed,
           hasLocalBytes: true,
+          primarySourceKind: local.sourceKind,
+          localUpload: upload,
         ),
       );
     }
@@ -401,16 +431,17 @@ class CatalogCubit extends Cubit<CatalogState> {
       return;
     }
 
-    void onIngest(IngestFileProgress p) {
-      if (!isClosed) emit(state.copyWith(ingestProgress: p));
-    }
+    void onIngest(IngestFileProgress p) => _emitIngestProgress(p);
 
     final result = await sync.sync(onIngestProgress: onIngest);
     if (isClosed) return;
 
     // Scan + ingest when rules exist (no-op if empty); one file at a time.
     try {
-      await scanner.scanAndIngest(onProgress: onIngest);
+      await scanner.scanAndIngest(
+        onProgress: onIngest,
+        onIndexed: () => _emitBrowseList(),
+      );
     } catch (e) {
       log.warn('catalog', 'tracking scan failed: $e');
     }
@@ -426,6 +457,8 @@ class CatalogCubit extends Cubit<CatalogState> {
           clearIngestProgress: true,
         ),
       );
+      _lastIngestProgress = null;
+      _lastIngestProgressEmit = null;
       await _emitBrowseList();
     } else {
       final err = result.error?.toString() ?? 'sync failed';
@@ -440,6 +473,8 @@ class CatalogCubit extends Cubit<CatalogState> {
               : CatalogViewState.degraded,
         ),
       );
+      _lastIngestProgress = null;
+      _lastIngestProgressEmit = null;
       await _emitBrowseList();
     }
   }
@@ -453,12 +488,13 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
     try {
       await scanner.scanAndIngest(
-        onProgress: (p) {
-          if (!isClosed) emit(state.copyWith(ingestProgress: p));
-        },
+        onProgress: _emitIngestProgress,
+        onIndexed: () => _emitBrowseList(),
       );
     } finally {
       if (!isClosed) emit(state.copyWith(clearIngestProgress: true));
+      _lastIngestProgress = null;
+      _lastIngestProgressEmit = null;
     }
     await _emitBrowseList();
   }

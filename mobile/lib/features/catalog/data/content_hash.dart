@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 // Incremental hasher is not exported by blake3_dart's public barrel.
@@ -16,28 +17,34 @@ class ContentHash {
   static String blake3Hex(Uint8List bytes) =>
       blake3.blake3Hex(bytes).toLowerCase();
 
-  /// Stream-hash a file without loading it into RAM.
+  /// Stream-hash a file on a background isolate (keeps the UI responsive).
+  ///
+  /// Progress is coarse (start/end only) because hashing is CPU-bound off-thread.
   static Future<String> blake3File(
     File file, {
     void Function(int bytesRead, int totalBytes)? onProgress,
   }) async {
     final total = await file.length();
-    final ctx = b3.HashContext.unkeyed();
-    var read = 0;
-    final raf = await file.open();
+    onProgress?.call(0, total <= 0 ? 1 : total);
+    final hash = await Isolate.run(() => _blake3FileSync(file.path));
+    onProgress?.call(total <= 0 ? 1 : total, total <= 0 ? 1 : total);
+    return hash;
+  }
+
+  static String _blake3FileSync(String path) {
+    final raf = File(path).openSync();
     try {
+      final ctx = b3.HashContext.unkeyed();
       while (true) {
-        final chunk = await raf.read(chunkSize);
+        final chunk = raf.readSync(chunkSize);
         if (chunk.isEmpty) break;
         ctx.update(chunk);
-        read += chunk.length;
-        onProgress?.call(read, total);
       }
+      final out = Uint8List(32);
+      ctx.finalize(out);
+      return b3.asHexString(out).toLowerCase();
     } finally {
-      await raf.close();
+      raf.closeSync();
     }
-    final out = Uint8List(32);
-    ctx.finalize(out);
-    return b3.asHexString(out).toLowerCase();
   }
 }

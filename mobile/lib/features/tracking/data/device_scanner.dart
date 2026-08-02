@@ -26,9 +26,13 @@ class DeviceScanner {
   final List<Directory>? _scanRootsOverride;
 
   /// Discover files, update local index, ingest pending tracked files.
+  ///
+  /// [onIndexed] runs after the local index is updated and before uploads,
+  /// so the UI can show `pending` rows while ingest is in flight.
   Future<ScanResult> scanAndIngest({
     bool ingestMatches = true,
     IngestProgressCallback? onProgress,
+    Future<void> Function()? onIndexed,
   }) async {
     final rules = (await repository.listRules()).where((r) => r.enabled).toList();
     if (rules.isEmpty) {
@@ -132,6 +136,9 @@ class DeviceScanner {
     }
 
     var ingested = 0;
+    if (onIndexed != null) {
+      await onIndexed();
+    }
     if (ingestMatches && pendingIngest.isNotEmpty) {
       final total = pendingIngest.length;
       for (var i = 0; i < total; i++) {

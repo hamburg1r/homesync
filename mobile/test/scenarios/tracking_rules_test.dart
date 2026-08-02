@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/tracking/data/source_kind.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_pattern.dart';
@@ -287,6 +288,61 @@ void main() {
         await harness.blobs.has('blake3', tracked.single.contentHash!),
         isFalse,
       );
+    });
+
+    test('pending tracked files stay pending until ingest; chip not listed',
+        () async {
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          return http.Response('unexpected ingest', 500);
+        }),
+      );
+
+      final file = File('${harness.scanRoot.path}/Download/soon.pdf')
+        ..createSync(recursive: true);
+      await file.writeAsString('pending-bytes');
+
+      await harness.tracking.addRule(
+        name: 'pdfs',
+        kind: TrackingRuleKind.regex,
+        patternOrUri: '*.pdf',
+      );
+
+      var indexedPending = false;
+      final result = await harness.scanner.scanAndIngest(
+        ingestMatches: false,
+        onIndexed: () async {
+          final tracked = await harness.tracking.listTracked();
+          expect(tracked, hasLength(1));
+          expect(tracked.single.ingestStatus, IngestStatus.pending);
+          indexedPending = true;
+        },
+      );
+      expect(result.tracked, 1);
+      expect(result.ingested, 0);
+      expect(indexedPending, isTrue);
+
+      final pending = CatalogFile(
+        fileId: 'local:${file.path}',
+        contentHash: 'pending',
+        hashAlgo: 'blake3',
+        sizeBytes: 13,
+        title: 'soon.pdf',
+        createdAt: 't',
+        updatedAt: 't',
+        availabilityMode: AvailabilityMode.listed,
+        hasLocalBytes: true,
+        primarySourceKind: 'download',
+        localUpload: LocalUploadState.pending,
+      );
+      expect(pending.statusLabel(), 'pending');
+      expect(pending.statusLabel(activeUploadPhase: 'uploading'), 'uploading');
+      expect(pending.provenanceSubtitle, contains('pending upload'));
+      expect(pending.isGhost, isFalse);
     });
   });
 }

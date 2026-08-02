@@ -24,6 +24,12 @@ enum AvailabilityMode {
   String get wire => name;
 }
 
+/// Phone→PC upload state for tracked local files (not server availability).
+enum LocalUploadState {
+  pending,
+  failed,
+}
+
 /// Catalog listing DTOs. Display [CatalogFile.title] may differ from any
 /// on-device path or PC `file_paths.relative_path` basename.
 @freezed
@@ -59,6 +65,9 @@ abstract class CatalogFile with _$CatalogFile {
     @JsonKey(includeFromJson: false, includeToJson: false)
     @Default(false)
     bool boundToServer,
+    /// Tracked phone file waiting for / failed phone→PC ingest.
+    @JsonKey(includeFromJson: false, includeToJson: false)
+    LocalUploadState? localUpload,
   }) = _CatalogFile;
 
   factory CatalogFile.fromJson(Map<String, dynamic> json) =>
@@ -68,8 +77,12 @@ abstract class CatalogFile with _$CatalogFile {
 
   bool get isPinned => availabilityMode == AvailabilityMode.pinned;
 
+  bool get isUploadPending => localUpload == LocalUploadState.pending;
+
+  bool get isUploadFailed => localUpload == LocalUploadState.failed;
+
   /// Listed metadata without local bytes — classic ghost / restore candidate.
-  bool get isGhost => !isDeleted && !hasLocalBytes;
+  bool get isGhost => !isDeleted && !hasLocalBytes && localUpload == null;
 
   /// Whether listed-mode thumb fetch is worth attempting.
   bool get canShowThumb =>
@@ -83,6 +96,18 @@ abstract class CatalogFile with _$CatalogFile {
     return fileId;
   }
 
+  /// Chip / status text (availability or local upload state).
+  String statusLabel({String? activeUploadPhase}) {
+    if (isDeleted) return 'removed';
+    if (isUploadFailed) return 'failed';
+    if (isUploadPending) {
+      final phase = activeUploadPhase?.trim();
+      if (phase != null && phase.isNotEmpty) return phase;
+      return 'pending';
+    }
+    return availabilityMode.wire;
+  }
+
   /// e.g. `from WhatsApp · on PC only` for ghost restore UX.
   String? get provenanceSubtitle {
     final from = sourceKindLabel(primarySourceKind);
@@ -93,6 +118,10 @@ abstract class CatalogFile with _$CatalogFile {
       if (hasLocalBytes) {
         parts.add('still on device');
       }
+    } else if (isUploadFailed) {
+      parts.add('upload failed');
+    } else if (isUploadPending) {
+      parts.add('pending upload');
     } else if (isGhost) {
       parts.add('on PC only');
     } else if (hasLocalBytes) {

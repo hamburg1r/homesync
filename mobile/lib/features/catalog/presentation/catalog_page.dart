@@ -40,6 +40,21 @@ class CatalogPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<CatalogCubit, CatalogState>(
+      // Ingest progress updates a banner only — rebuilding the file list (and
+      // restarting thumb FutureBuilders) every chunk caused heavy frame skips.
+      buildWhen: (previous, current) =>
+          previous.viewState != current.viewState ||
+          previous.files != current.files ||
+          previous.statusMessage != current.statusMessage ||
+          previous.busyFileId != current.busyFileId ||
+          previous.browseMode != current.browseMode ||
+          previous.groupRuleId != current.groupRuleId ||
+          previous.groupTitle != current.groupTitle ||
+          previous.deviceAndSyncedOnly != current.deviceAndSyncedOnly ||
+          previous.rules != current.rules ||
+          previous.searchQuery != current.searchQuery ||
+          previous.syncEnabled != current.syncEnabled ||
+          previous.refreshing != current.refreshing,
       builder: (context, state) {
         return CatalogBrowseView(
           state: state.viewState,
@@ -53,7 +68,37 @@ class CatalogPage extends StatelessWidget {
           rules: state.rules,
           searchQuery: state.searchQuery,
           syncEnabled: state.syncEnabled,
-          ingestProgress: state.ingestProgress,
+          progressBanner: BlocSelector<CatalogCubit, CatalogState,
+              IngestFileProgress?>(
+            selector: (s) => s.ingestProgress,
+            builder: (context, progress) {
+              if (progress == null) return const SizedBox.shrink();
+              return Material(
+                elevation: 1,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '${progress.phase} '
+                        '${progress.index}/${progress.total}: '
+                        '${progress.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 6),
+                      LinearProgressIndicator(
+                        value: progress.overall,
+                        minHeight: 4,
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
           onPin: (file) => _bringToPhone(context, file),
@@ -151,7 +196,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.rules = const [],
     this.searchQuery = '',
     this.syncEnabled = true,
-    this.ingestProgress,
+    this.progressBanner,
     this.onRefresh,
     this.onOpenSettings,
     this.onPin,
@@ -178,7 +223,7 @@ class CatalogBrowseView extends StatelessWidget {
   final List<TrackingRule> rules;
   final String searchQuery;
   final bool syncEnabled;
-  final IngestFileProgress? ingestProgress;
+  final Widget? progressBanner;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
   final Future<String?> Function(CatalogFile file)? onPin;
@@ -351,31 +396,7 @@ class CatalogBrowseView extends StatelessWidget {
                 onChanged: onSearchChanged!,
               ),
             ),
-          if (ingestProgress != null)
-            Material(
-              elevation: 1,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      '${ingestProgress!.phase} '
-                      '${ingestProgress!.index}/${ingestProgress!.total}: '
-                      '${ingestProgress!.title}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 6),
-                    LinearProgressIndicator(
-                      value: ingestProgress!.overall,
-                      minHeight: 4,
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          ?progressBanner,
           if (!syncEnabled)
             MaterialBanner(
               content: Text(
@@ -576,12 +597,14 @@ class _FileTile extends StatelessWidget {
     final typeLabel = file.mimeType ?? 'unknown type';
     final sizeLabel = _formatBytes(file.sizeBytes);
     final tags = file.tags.isEmpty ? 'no tags' : file.tags.join(', ');
-    final modeLabel = file.isDeleted ? 'removed' : file.availabilityMode.wire;
-    final chipColor = file.isDeleted
+    final modeLabel = file.statusLabel();
+    final chipColor = file.isDeleted || file.isUploadFailed
         ? theme.colorScheme.errorContainer
-        : file.isPinned
-            ? theme.colorScheme.primaryContainer
-            : theme.colorScheme.surfaceContainerHighest;
+        : file.isUploadPending
+            ? theme.colorScheme.tertiaryContainer
+            : file.isPinned
+                ? theme.colorScheme.primaryContainer
+                : theme.colorScheme.surfaceContainerHighest;
     final provenance = file.provenanceSubtitle;
     final subtitle = provenance == null
         ? '$typeLabel · $sizeLabel · $tags'
@@ -613,6 +636,7 @@ class _FileTile extends StatelessWidget {
       onTap: () {
         showModalBottomSheet<void>(
           context: context,
+          isScrollControlled: true,
           builder: (sheetContext) => _FileDetailSheet(
             file: file,
             busy: busy,
@@ -762,79 +786,87 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
         !file.fileId.startsWith('local:');
     final showBoundToggle =
         file.isPinned && !file.isDeleted && widget.onBoundToServer != null;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(file.displayName, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          if (file.provenanceSubtitle != null)
-            Text(
-              file.provenanceSubtitle!,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-            ),
-          Text(
-            file.isDeleted
-                ? 'Removed from PC'
-                    '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'
-                : 'Availability: ${file.availabilityMode.wire}'
-                    '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}',
-          ),
-          Text('Type: ${file.mimeType ?? "unknown"}'),
-          Text('Size: ${_formatBytes(file.sizeBytes)}'),
-          if (widget.localPathFuture != null)
-            FutureBuilder<String?>(
-              future: widget.localPathFuture,
-              builder: (context, snapshot) {
-                final path = snapshot.data;
-                if (path == null || path.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                return SelectableText(
-                  'Path: $path',
-                  style: Theme.of(context).textTheme.bodySmall,
-                );
-              },
-            ),
-          if (widget.catalogPathFuture != null)
-            FutureBuilder<String?>(
-              future: widget.catalogPathFuture,
-              builder: (context, snapshot) {
-                final path = snapshot.data;
-                if (path == null || path.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                return SelectableText(
-                  'Catalog path: $path',
-                  style: Theme.of(context).textTheme.bodySmall,
-                );
-              },
-            ),
-          Text('Hash: ${file.hashAlgo}:${file.contentHash}'),
-          if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
-          if (file.notes != null && file.notes!.isNotEmpty)
-            Text('Notes: ${file.notes}'),
-          if (showBoundToggle) ...[
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Bound to server'),
-              subtitle: const Text(
-                'Delete this pin if the PC removes the file',
-              ),
-              value: _bound,
-              onChanged: (busy || _bindingBusy) ? null : _setBound,
-            ),
-          ],
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.9;
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(file.displayName, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              if (file.provenanceSubtitle != null)
+                Text(
+                  file.provenanceSubtitle!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                ),
+              Text(
+                file.isDeleted
+                    ? 'Removed from PC'
+                        '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'
+                    : file.isUploadPending
+                        ? 'Pending upload to PC · on device'
+                        : file.isUploadFailed
+                            ? 'Upload failed · on device'
+                            : 'Availability: ${file.availabilityMode.wire}'
+                                '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}',
+              ),
+              Text('Type: ${file.mimeType ?? "unknown"}'),
+              Text('Size: ${_formatBytes(file.sizeBytes)}'),
+              if (widget.localPathFuture != null)
+                FutureBuilder<String?>(
+                  future: widget.localPathFuture,
+                  builder: (context, snapshot) {
+                    final path = snapshot.data;
+                    if (path == null || path.isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    return SelectableText(
+                      'Path: $path',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    );
+                  },
+                ),
+              if (widget.catalogPathFuture != null)
+                FutureBuilder<String?>(
+                  future: widget.catalogPathFuture,
+                  builder: (context, snapshot) {
+                    final path = snapshot.data;
+                    if (path == null || path.isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    return SelectableText(
+                      'Catalog path: $path',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    );
+                  },
+                ),
+              Text('Hash: ${file.hashAlgo}:${file.contentHash}'),
+              if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
+              if (file.notes != null && file.notes!.isNotEmpty)
+                Text('Notes: ${file.notes}'),
+              if (showBoundToggle) ...[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Bound to server'),
+                  subtitle: const Text(
+                    'Delete this pin if the PC removes the file',
+                  ),
+                  value: _bound,
+                  onChanged: (busy || _bindingBusy) ? null : _setBound,
+                ),
+              ],
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
               if (file.hasLocalBytes && widget.onOpen != null)
                 FilledButton.icon(
                   onPressed: busy
@@ -972,14 +1004,26 @@ class _FileDetailSheetState extends State<_FileDetailSheet> {
                   onPressed: () => Navigator.pop(context),
                   child: const Text('Removed from PC — metadata only'),
                 )
+              else if (file.isUploadPending)
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Pending upload — will sync to PC soon'),
+                )
+              else if (file.isUploadFailed)
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Upload failed — pull to refresh to retry'),
+                )
               else if (!file.hasLocalBytes)
                 TextButton(
                   onPressed: () => Navigator.pop(context),
                   child: const Text('Listed only — cannot open offline'),
                 ),
+                ],
+              ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }

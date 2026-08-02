@@ -193,3 +193,5 @@ Record important choices here as they happen.
 | 2026-08-03 | PC→phone materialize path: settings default + per-download folder/name | Was app-only `homesync_pins`; users need Downloads-style destinations |
 | 2026-08-03 | Device reclaim: `GET /v1/devices` + Settings reclaim/reset | Survive reinstall without orphaning availability keyed by device_id |
 | 2026-08-03 | Settings sheet wraps content in SafeArea | Full-height modal collided with status/notification bar |
+| 2026-08-03 | Tracked pending/failed show upload chip (not listed) | Was mapped to availability listed; onIndexed refreshes list mid-scan |
+| 2026-08-03 | Ingest: BLAKE3 on isolate; throttle progress; scoped rebuilds | Per-chunk UI rebuilds + main-isolate hash caused frame skips |
