@@ -25,6 +25,7 @@ class SettingsStore extends ChangeNotifier {
   static const _kPinBudgetBytes = 'pin_budget_bytes';
   static const _kThemeMode = 'theme_mode';
   static const _kUseDynamicColor = 'use_dynamic_color';
+  static const _kSyncEnabled = 'sync_enabled';
 
   /// Prefer DI `@preResolve`; available for tests.
   static Future<SettingsStore> open(AppLog log) async {
@@ -98,6 +99,15 @@ class SettingsStore extends ChangeNotifier {
   Future<void> setUseDynamicColor(bool value) async {
     await _prefs.setBool(_kUseDynamicColor, value);
     _log.info('settings', 'use_dynamic_color set to $value');
+    notifyListeners();
+  }
+
+  /// When false, catalog delta + tracking ingest are skipped (local browse only).
+  bool get syncEnabled => _prefs.getBool(_kSyncEnabled) ?? true;
+
+  Future<void> setSyncEnabled(bool value) async {
+    await _prefs.setBool(_kSyncEnabled, value);
+    _log.info('settings', 'sync_enabled set to $value');
     notifyListeners();
   }
 

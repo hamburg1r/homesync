@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/local_blob_store.dart';
@@ -77,13 +79,17 @@ class CatalogRepository {
               ..where((t) => t.fileId.equals(file.fileId)))
             .go();
 
-        // Tombstone: drop local bytes only if no other active file shares the hash.
+        // Tombstone: drop local pin bytes only when bound to server.
         if (file.deletedAt != null) {
-          await _deleteBlobIfUnreferenced(
-            algo: file.hashAlgo,
-            contentHash: file.contentHash,
-            exceptFileId: file.fileId,
-          );
+          final bound = await _isBoundToServer(file.fileId);
+          if (bound) {
+            await _deleteBlobIfUnreferenced(
+              algo: file.hashAlgo,
+              contentHash: file.contentHash,
+              exceptFileId: file.fileId,
+            );
+          }
+          await clearBoundToServer(file.fileId);
         }
 
         // Default remote files to listed for this device unless server sent a row.
@@ -215,6 +221,56 @@ class CatalogRepository {
     });
   }
 
+  /// Apply a soft-delete tombstone locally (after `DELETE /v1/files/{id}`).
+  /// Explicit phone-initiated remove always drops local bytes.
+  Future<void> applyTombstone(CatalogFile file) async {
+    await upsertFile(file);
+    if (file.deletedAt != null) {
+      await _deleteBlobIfUnreferenced(
+        algo: file.hashAlgo,
+        contentHash: file.contentHash,
+        exceptFileId: file.fileId,
+      );
+      await clearBoundToServer(file.fileId);
+    }
+  }
+
+  /// Opt-in: PC tombstone also deletes this pin's local bytes.
+  Future<void> setBoundToServer(String fileId, {required bool bound}) async {
+    if (!bound) {
+      await clearBoundToServer(fileId);
+      return;
+    }
+    await _db.into(_db.pinServerBinds).insertOnConflictUpdate(
+          PinServerBindsCompanion.insert(
+            fileId: fileId,
+            deleteOnTombstone: const Value(true),
+          ),
+        );
+    _log.info('catalog', 'bound to server $fileId');
+  }
+
+  Future<void> clearBoundToServer(String fileId) async {
+    await (_db.delete(_db.pinServerBinds)
+          ..where((t) => t.fileId.equals(fileId)))
+        .go();
+  }
+
+  Future<bool> _isBoundToServer(String fileId) async {
+    final row = await (_db.select(_db.pinServerBinds)
+          ..where((t) => t.fileId.equals(fileId)))
+        .getSingleOrNull();
+    return row?.deleteOnTombstone ?? false;
+  }
+
+  /// Absolute path of a phone-origin file (tracking), if still on disk.
+  Future<String?> originPathForFileId(String fileId) async {
+    final row = await (_db.select(_db.localTrackedFiles)
+          ..where((t) => t.fileId.equals(fileId)))
+        .getSingleOrNull();
+    return row?.localPath;
+  }
+
   Future<CatalogFile?> getFile(String fileId) async {
     final row = await (_db.select(_db.catalogFiles)
           ..where((f) => f.fileId.equals(fileId)))
@@ -257,8 +313,11 @@ class CatalogRepository {
             ))
           .getSingleOrNull();
       final mode = AvailabilityMode.parse(avail?.mode ?? 'listed');
-      final hasBytes = await _blobs.has(row.hashAlgo, row.contentHash);
+      final hasPin = await _blobs.has(row.hashAlgo, row.contentHash);
+      final origin = await originPathForFileId(row.fileId);
+      final hasOrigin = origin != null && await File(origin).exists();
       final sourceKind = await _primarySourceKind(row.fileId);
+      final bound = await _isBoundToServer(row.fileId);
       result.add(
         CatalogFile(
           fileId: row.fileId,
@@ -274,8 +333,9 @@ class CatalogRepository {
           deletedAt: row.deletedAt,
           tags: tags,
           availabilityMode: mode,
-          hasLocalBytes: hasBytes,
+          hasLocalBytes: hasPin || hasOrigin,
           primarySourceKind: sourceKind,
+          boundToServer: bound,
         ),
       );
     }

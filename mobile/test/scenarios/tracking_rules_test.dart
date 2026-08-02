@@ -59,9 +59,8 @@ void main() {
               request.url.path.endsWith('/devices')) {
             return deviceOkResponse();
           }
-          if (request.method == 'PUT' && request.url.path.contains('/blobs/')) {
-            return http.Response('', 201);
-          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
           if (request.method == 'POST' &&
               request.url.path.endsWith('/files')) {
             creates += 1;
@@ -141,9 +140,8 @@ void main() {
               request.url.path.endsWith('/devices')) {
             return deviceOkResponse();
           }
-          if (request.method == 'PUT' && request.url.path.contains('/blobs/')) {
-            return http.Response('', 201);
-          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
           if (request.method == 'POST' &&
               request.url.path.endsWith('/files')) {
             creates += 1;
@@ -212,6 +210,82 @@ void main() {
       expect(
         tracked.map((f) => f.title).toSet(),
         {'note.md', 'vault.kdbx'},
+      );
+    });
+
+    test('file rule ingests only the selected path', () async {
+      var creates = 0;
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            creates += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "ing-$creates",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'ing-1', mode: 'pinned');
+          }
+          if (request.method == 'GET' &&
+              request.url.path.contains('/catalog/delta')) {
+            return http.Response(
+              '{"next_cursor":"","files":[],"tags":[],"file_tags":[],"paths":[],"availability":[]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final keep = File('${harness.scanRoot.path}/keep-me.txt')
+        ..writeAsStringSync('tracked');
+      File('${harness.scanRoot.path}/ignore-me.txt').writeAsStringSync('nope');
+
+      await harness.tracking.addRule(
+        name: 'one',
+        kind: TrackingRuleKind.file,
+        patternOrUri: keep.path,
+      );
+
+      final result = await harness.scanner.scanAndIngest();
+      expect(result.tracked, 1);
+      expect(result.ingested, 1);
+      expect(creates, 1);
+
+      final tracked = await harness.tracking.listTracked();
+      expect(tracked, hasLength(1));
+      expect(tracked.single.title, 'keep-me.txt');
+      // Original path is SoT on phone — no duplicate in pin store.
+      expect(
+        await harness.blobs.has('blake3', tracked.single.contentHash!),
+        isFalse,
       );
     });
   });

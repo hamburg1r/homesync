@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
@@ -20,6 +21,9 @@ class PinException implements Exception {
 }
 
 /// Pin = availability update **and** blob materialization (both required).
+///
+/// Phone-origin tracked files keep bytes at their original path (no app-storage
+/// duplicate). Pin store is for PC→phone materialization only.
 @lazySingleton
 class PinService {
   PinService({
@@ -49,6 +53,30 @@ class PinService {
     }
 
     final deviceId = await identity.ensureDeviceId();
+
+    // Already on device at origin path — just mark pinned, no pin-store copy.
+    final origin = await repository.originPathForFileId(fileId);
+    if (origin != null && await File(origin).exists()) {
+      final info = await api.putAvailability(
+        fileId: fileId,
+        deviceId: deviceId,
+        mode: AvailabilityMode.pinned.wire,
+      );
+      await repository.upsertAvailability(
+        fileId: fileId,
+        deviceId: deviceId,
+        mode: AvailabilityMode.pinned,
+        updatedAt: info.updatedAt,
+      );
+      log.info('pin', 'pinned $fileId (origin path)');
+      final refreshed = await repository.getFile(fileId);
+      return refreshed ??
+          file.copyWith(
+            availabilityMode: AvailabilityMode.pinned,
+            hasLocalBytes: true,
+          );
+    }
+
     await _ensureDiskBudget(file);
 
     final info = await api.putAvailability(
@@ -71,7 +99,6 @@ class PinService {
         );
         await blobs.write(file.hashAlgo, file.contentHash, bytes);
       } on HomesyncApiException catch (e) {
-        // Roll availability back to listed if bytes cannot be fetched.
         log.warn('pin', 'blob missing after pin: $e');
         await api.putAvailability(
           fileId: fileId,
@@ -96,13 +123,14 @@ class PinService {
 
     log.info('pin', 'pinned $fileId');
     final refreshed = await repository.getFile(fileId);
-    return refreshed ?? file.copyWith(
-      availabilityMode: AvailabilityMode.pinned,
-      hasLocalBytes: true,
-    );
+    return refreshed ??
+        file.copyWith(
+          availabilityMode: AvailabilityMode.pinned,
+          hasLocalBytes: true,
+        );
   }
 
-  /// Unpin: set listed, delete local bytes, keep catalog listing.
+  /// Unpin: set listed, delete pin-store bytes only (never deletes origin path).
   Future<CatalogFile> unpin(String fileId) async {
     final file = await repository.getFile(fileId);
     if (file == null) {
@@ -122,13 +150,25 @@ class PinService {
       updatedAt: info.updatedAt,
     );
     await blobs.delete(file.hashAlgo, file.contentHash);
-    log.info('pin', 'unpinned $fileId (listing kept)');
+    await repository.clearBoundToServer(fileId);
+    log.info('pin', 'unpinned $fileId (listing kept; origin untouched)');
 
     final refreshed = await repository.getFile(fileId);
-    return refreshed ?? file.copyWith(
-      availabilityMode: AvailabilityMode.listed,
-      hasLocalBytes: false,
-    );
+    return refreshed ??
+        file.copyWith(
+          availabilityMode: AvailabilityMode.listed,
+          hasLocalBytes: false,
+        );
+  }
+
+  /// Absolute path for open: pin store or phone-origin tracking path.
+  Future<String?> resolveLocalPath(CatalogFile file) async {
+    if (await blobs.has(file.hashAlgo, file.contentHash)) {
+      return (await blobs.pathFor(file.hashAlgo, file.contentHash)).path;
+    }
+    final origin = await repository.originPathForFileId(file.fileId);
+    if (origin != null && await File(origin).exists()) return origin;
+    return null;
   }
 
   /// Open local bytes when present; null when listed-only / missing.
@@ -138,7 +178,11 @@ class PinService {
         file.availabilityMode != AvailabilityMode.cached) {
       return null;
     }
-    return blobs.read(file.hashAlgo, file.contentHash);
+    final fromPin = await blobs.read(file.hashAlgo, file.contentHash);
+    if (fromPin != null) return fromPin;
+    final path = await resolveLocalPath(file);
+    if (path == null) return null;
+    return File(path).readAsBytes();
   }
 
   Future<void> _ensureDiskBudget(CatalogFile file) async {

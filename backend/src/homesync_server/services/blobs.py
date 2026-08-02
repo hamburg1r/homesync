@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from homesync_server.models import File, FilePath, LibraryRoot
-from homesync_server.storage import blob_path, hash_bytes, hash_file, write_blob_atomic
+from homesync_server.storage import (
+    blob_path,
+    hash_bytes,
+    hash_file,
+    write_blob_atomic,
+    write_blob_stream_atomic,
+)
 
 
 class BlobNotFoundError(Exception):
@@ -125,15 +131,72 @@ def put_blob_bytes(
 
     dest = blob_path(data_root, algo_norm, digest)
     if dest.is_file():
-        existing = dest.read_bytes()
-        if existing == body:
+        if dest.stat().st_size == len(body) and hash_file(dest, algo=algo_norm) == digest:
             return dest, False
         raise BlobCollisionError(
             f"blob collision for {algo_norm}/{digest}: "
-            f"existing size={len(existing)} new size={len(body)}"
+            f"existing size={dest.stat().st_size} new size={len(body)}"
         )
 
     write_blob_atomic(dest, body)
+    return dest, True
+
+
+def put_blob_stream(
+    data_root: Path,
+    algo: str,
+    hex_hash: str,
+    chunks: object,
+    *,
+    expected_size: int | None = None,
+) -> tuple[Path, bool]:
+    """Stream chunks to a temp file while hashing; promote on success.
+
+    ``chunks`` is an iterable of ``bytes``.
+    """
+    algo_norm = algo.strip().lower()
+    digest = hex_hash.strip().lower()
+    if len(digest) < 4:
+        raise ValueError(f"hash too short: {digest!r}")
+
+    dest = blob_path(data_root, algo_norm, digest)
+
+    # Fast dedup when object already present and size matches.
+    if dest.is_file() and expected_size is not None and dest.stat().st_size == expected_size:
+        if hash_file(dest, algo=algo_norm) == digest:
+            # Drain body so the client does not get a truncated write error.
+            for _ in chunks:  # type: ignore[attr-defined]
+                pass
+            return dest, False
+
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        size, actual = write_blob_stream_atomic(
+            dest,
+            chunks,
+            algo=algo_norm,
+            expected_size=expected_size,
+        )
+    except ValueError as exc:
+        raise BlobHashMismatchError(str(exc)) from exc
+
+    if actual != digest:
+        tmp.unlink(missing_ok=True)
+        raise BlobHashMismatchError(
+            f"hash mismatch: expected {digest}, got {actual}"
+        )
+
+    if dest.is_file():
+        if dest.stat().st_size == size and hash_file(dest, algo=algo_norm) == digest:
+            tmp.unlink(missing_ok=True)
+            return dest, False
+        tmp.unlink(missing_ok=True)
+        raise BlobCollisionError(
+            f"blob collision for {algo_norm}/{digest}: "
+            f"existing size={dest.stat().st_size} new size={size}"
+        )
+
+    tmp.replace(dest)
     return dest, True
 
 

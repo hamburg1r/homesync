@@ -26,7 +26,10 @@ class DeviceScanner {
   final List<Directory>? _scanRootsOverride;
 
   /// Discover files, update local index, ingest pending tracked files.
-  Future<ScanResult> scanAndIngest({bool ingestMatches = true}) async {
+  Future<ScanResult> scanAndIngest({
+    bool ingestMatches = true,
+    IngestProgressCallback? onProgress,
+  }) async {
     final rules = (await repository.listRules()).where((r) => r.enabled).toList();
     if (rules.isEmpty) {
       log.info('tracking', 'no rules — skip scan');
@@ -42,68 +45,98 @@ class DeviceScanner {
         .toList();
     final folderRules =
         rules.where((r) => r.kind == TrackingRuleKind.folder).toList();
+    final fileRules =
+        rules.where((r) => r.kind == TrackingRuleKind.file).toList();
+    final fileRulePaths = {
+      for (final r in fileRules) p.normalize(r.patternOrUri): r,
+    };
 
     var seen = 0;
     var tracked = 0;
     final pendingIngest = <LocalTrackedFile>[];
+    final seenPaths = <String>{};
+
+    Future<void> consider({
+      required String path,
+      required int sizeBytes,
+      required TrackingRule? matched,
+    }) async {
+      final norm = p.normalize(path);
+      if (!seenPaths.add(norm)) return;
+      seen += 1;
+      final title = p.basename(path);
+      final kind = sourceKindFromPath(path);
+
+      if (matched != null) {
+        tracked += 1;
+        final existing = await repository.getLocalFile(path);
+        final alreadySynced = existing?.isSynced ?? false;
+        final row = LocalTrackedFile(
+          localPath: path,
+          ruleId: matched.id,
+          fileId: alreadySynced ? existing!.fileId : null,
+          contentHash: alreadySynced ? existing!.contentHash : null,
+          title: title,
+          sizeBytes: sizeBytes,
+          mimeType: null,
+          sourceKind: kind,
+          seenAt: now,
+          ingestStatus:
+              alreadySynced ? IngestStatus.synced : IngestStatus.pending,
+        );
+        await repository.upsertLocalFile(row);
+        if (!alreadySynced) pendingIngest.add(row);
+      } else {
+        await repository.upsertLocalFile(
+          LocalTrackedFile(
+            localPath: path,
+            ruleId: null,
+            title: title,
+            sizeBytes: sizeBytes,
+            sourceKind: kind,
+            seenAt: now,
+            ingestStatus: IngestStatus.untracked,
+          ),
+        );
+      }
+    }
 
     for (final root in roots) {
       if (!await root.exists()) continue;
       await for (final entity in _listFilesSafe(root)) {
-        // Skip hidden / Android noise.
         final path = entity.path;
         if (path.contains('/.')) continue;
-        seen += 1;
-
         final matched = _matchRule(
           path: path,
           regexRules: regexRules,
           folderRules: folderRules,
+          fileRulePaths: fileRulePaths,
         );
         final stat = await entity.stat();
-        final title = p.basename(path);
-        final kind = sourceKindFromPath(path);
-
-        if (matched != null) {
-          tracked += 1;
-          final existing = await repository.getLocalFile(path);
-          final alreadySynced = existing?.isSynced ?? false;
-          final row = LocalTrackedFile(
-            localPath: path,
-            ruleId: matched.id,
-            fileId: alreadySynced ? existing!.fileId : null,
-            contentHash: alreadySynced ? existing!.contentHash : null,
-            title: title,
-            sizeBytes: stat.size,
-            mimeType: null,
-            sourceKind: kind,
-            seenAt: now,
-            ingestStatus:
-                alreadySynced ? IngestStatus.synced : IngestStatus.pending,
-          );
-          await repository.upsertLocalFile(row);
-          if (!alreadySynced) pendingIngest.add(row);
-        } else {
-          await repository.upsertLocalFile(
-            LocalTrackedFile(
-              localPath: path,
-              ruleId: null,
-              title: title,
-              sizeBytes: stat.size,
-              sourceKind: kind,
-              seenAt: now,
-              ingestStatus: IngestStatus.untracked,
-            ),
-          );
-        }
+        await consider(
+          path: path,
+          sizeBytes: stat.size,
+          matched: matched,
+        );
       }
     }
 
+    // File rules: ensure exact paths are considered even if not under a walk root.
+    for (final rule in fileRules) {
+      final file = File(rule.patternOrUri);
+      if (!await file.exists()) continue;
+      final path = file.path;
+      if (path.contains('/.')) continue;
+      final size = (await file.stat()).size;
+      await consider(path: path, sizeBytes: size, matched: rule);
+    }
+
     var ingested = 0;
-    if (ingestMatches) {
-      for (final row in pendingIngest) {
+    if (ingestMatches && pendingIngest.isNotEmpty) {
+      final total = pendingIngest.length;
+      for (var i = 0; i < total; i++) {
+        final row = pendingIngest[i];
         try {
-          final bytes = await File(row.localPath).readAsBytes();
           final ruleName = rules
               .firstWhere(
                 (r) => r.id == row.ruleId,
@@ -117,11 +150,15 @@ class DeviceScanner {
                 ),
               )
               .name;
-          final file = await ingest.ingestBytes(
-            bytes,
+          final file = await ingest.ingestFile(
+            File(row.localPath),
             title: row.title,
             sourceKind: row.sourceKind,
-            relativePath: 'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+            relativePath:
+                'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+            index: i + 1,
+            total: total,
+            onProgress: onProgress,
           );
           await repository.markSynced(
             localPath: row.localPath,
@@ -147,8 +184,11 @@ class DeviceScanner {
     required String path,
     required List<({TrackingRule rule, TrackingPattern pattern})> regexRules,
     required List<TrackingRule> folderRules,
+    required Map<String, TrackingRule> fileRulePaths,
   }) {
     final norm = p.normalize(path);
+    final fileHit = fileRulePaths[norm];
+    if (fileHit != null) return fileHit;
     for (final folder in folderRules) {
       if (_isUnderRoot(norm, folder.patternOrUri)) return folder;
     }

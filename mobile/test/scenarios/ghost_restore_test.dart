@@ -103,7 +103,8 @@ void main() {
     expect(await harness.blobs.has('blake3', hash), isTrue);
   });
 
-  test('tombstone removes listing and deletes local bytes', () async {
+  test('tombstone removes listing; keeps local bytes unless bound to server',
+      () async {
     const payload = 'soon deleted\n';
     final hash =
         '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
@@ -161,6 +162,71 @@ void main() {
     await harness.pinService.pin('f1');
     expect(await harness.blobs.has('blake3', hash), isTrue);
     expect(await harness.repository.listActiveFiles(), hasLength(1));
+
+    // Default: unbound — tombstone drops listing but keeps pin bytes.
+    await harness.sync.sync();
+    expect(await harness.repository.listActiveFiles(), isEmpty);
+    expect(await harness.blobs.has('blake3', hash), isTrue);
+  });
+
+  test('bound to server: tombstone deletes local pin bytes', () async {
+    const payload = 'bound delete\n';
+    final hash =
+        '99887766554433221100ffeeddccbbaa99887766554433221100ffeeddccbbaa';
+    var step = 0;
+
+    harness = await TestCatalogHarness.open(
+      MockClient((request) async {
+        if (request.method == 'POST') return deviceOkResponse();
+        if (request.method == 'PUT' &&
+            request.url.path.contains('/availability/')) {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          return availabilityOkResponse(
+            fileId: 'f1',
+            mode: body['mode'] as String,
+          );
+        }
+        if (request.method == 'GET' && request.url.path.contains('/blobs/')) {
+          return http.Response(payload, 200);
+        }
+        step += 1;
+        if (step == 1) {
+          return http.Response(
+            '''
+{
+  "next_cursor": "v1:a|f1",
+  "files": [${catalogFileJson(id: 'f1', title: 'bound.txt', updatedAt: 'a', contentHash: hash, sizeBytes: payload.length)}],
+  "tags": [],
+  "file_tags": [],
+  "paths": [],
+  "availability": []
+}
+''',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          '''
+{
+  "next_cursor": "v1:b|f1",
+  "files": [${catalogFileJson(id: 'f1', title: 'bound.txt', updatedAt: 'b', deletedAt: 'b', contentHash: hash, sizeBytes: payload.length)}],
+  "tags": [],
+  "file_tags": [],
+  "paths": [],
+  "availability": []
+}
+''',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await harness.sync.sync();
+    await harness.pinService.pin('f1');
+    await harness.repository.setBoundToServer('f1', bound: true);
+    expect((await harness.repository.getFile('f1'))!.boundToServer, isTrue);
 
     await harness.sync.sync();
     expect(await harness.repository.listActiveFiles(), isEmpty);

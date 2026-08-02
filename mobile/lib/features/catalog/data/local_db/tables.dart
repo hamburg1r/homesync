@@ -82,9 +82,9 @@ class TrackingRules extends Table {
   TextColumn get id => text()();
   /// Display / drawer group name; defaults to `misc` when blank at insert time.
   TextColumn get name => text()();
-  /// `regex` | `folder`
+  /// `regex` | `folder` | `file`
   TextColumn get kind => text()();
-  /// Glob/regex pattern, or absolute folder path / SAF URI.
+  /// Glob/regex pattern, absolute folder path, or absolute file path.
   TextColumn get patternOrUri => text()();
   BoolColumn get enabled => boolean().withDefault(const Constant(true))();
   TextColumn get createdAt => text()();
@@ -110,4 +110,17 @@ class LocalTrackedFiles extends Table {
 
   @override
   Set<Column<Object>> get primaryKey => {localPath};
+}
+
+/// Per-file phone policy: when bound, a PC tombstone also deletes local pin bytes.
+/// Only meaningful for pinned files (UI enforces that).
+@DataClassName('PinServerBindRow')
+class PinServerBinds extends Table {
+  TextColumn get fileId => text()();
+  /// When true, receiving `deleted_at` drops local materialised bytes.
+  BoolColumn get deleteOnTombstone =>
+      boolean().withDefault(const Constant(true))();
+
+  @override
+  Set<Column<Object>> get primaryKey => {fileId};
 }

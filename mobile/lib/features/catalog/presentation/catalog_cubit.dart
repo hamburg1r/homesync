@@ -5,11 +5,14 @@ import 'dart:typed_data';
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
+import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
+import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -31,6 +34,8 @@ final class CatalogState extends Equatable {
     this.deviceAndSyncedOnly = false,
     this.rules = const [],
     this.searchQuery = '',
+    this.syncEnabled = true,
+    this.ingestProgress,
   });
 
   final CatalogViewState viewState;
@@ -44,6 +49,8 @@ final class CatalogState extends Equatable {
   final bool deviceAndSyncedOnly;
   final List<TrackingRule> rules;
   final String searchQuery;
+  final bool syncEnabled;
+  final IngestFileProgress? ingestProgress;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -60,6 +67,9 @@ final class CatalogState extends Equatable {
     bool? deviceAndSyncedOnly,
     List<TrackingRule>? rules,
     String? searchQuery,
+    bool? syncEnabled,
+    IngestFileProgress? ingestProgress,
+    bool clearIngestProgress = false,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -74,6 +84,10 @@ final class CatalogState extends Equatable {
       deviceAndSyncedOnly: deviceAndSyncedOnly ?? this.deviceAndSyncedOnly,
       rules: rules ?? this.rules,
       searchQuery: searchQuery ?? this.searchQuery,
+      syncEnabled: syncEnabled ?? this.syncEnabled,
+      ingestProgress: clearIngestProgress
+          ? null
+          : (ingestProgress ?? this.ingestProgress),
     );
   }
 
@@ -90,6 +104,8 @@ final class CatalogState extends Equatable {
         deviceAndSyncedOnly,
         rules,
         searchQuery,
+        syncEnabled,
+        ingestProgress,
       ];
 }
 
@@ -99,36 +115,50 @@ class CatalogCubit extends Cubit<CatalogState> {
   CatalogCubit({
     required this.repository,
     required this.sync,
+    required this.api,
     required this.pinService,
     required this.thumbService,
     required this.tracking,
     required this.scanner,
+    required this.settings,
     required this.log,
-  }) : super(const CatalogState()) {
+  }) : super(CatalogState(syncEnabled: settings.syncEnabled)) {
     _filesSub = repository.watchActiveFiles().listen(_onCatalogFiles);
     _rulesSub = tracking.watchRules().listen((rules) {
       if (!isClosed) emit(state.copyWith(rules: rules));
     });
+    settings.addListener(_onSettingsChanged);
   }
 
   final CatalogRepository repository;
   final CatalogSync sync;
+  final HomesyncApi api;
   final PinService pinService;
   final ThumbService thumbService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
+  final SettingsStore settings;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
   StreamSubscription<List<TrackingRule>>? _rulesSub;
   List<CatalogFile> _catalogFiles = const [];
   bool _started = false;
 
+  void _onSettingsChanged() {
+    if (isClosed) return;
+    if (state.syncEnabled != settings.syncEnabled) {
+      emit(state.copyWith(syncEnabled: settings.syncEnabled));
+    }
+  }
+
   Future<void> start() async {
     if (_started) return;
     _started = true;
     log.info('catalog', 'cubit start');
     final rules = await tracking.listRules();
-    if (!isClosed) emit(state.copyWith(rules: rules));
+    if (!isClosed) {
+      emit(state.copyWith(rules: rules, syncEnabled: settings.syncEnabled));
+    }
     await refresh(showSpinnerWhenEmpty: true);
   }
 
@@ -279,16 +309,41 @@ class CatalogCubit extends Cubit<CatalogState> {
     emit(
       state.copyWith(
         refreshing: true,
+        syncEnabled: settings.syncEnabled,
         viewState: showSpinner ? CatalogViewState.loading : state.viewState,
       ),
     );
 
-    final result = await sync.sync();
+    if (!settings.syncEnabled) {
+      log.info('catalog', 'sync paused — local catalog only');
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            refreshing: false,
+            clearIngestProgress: true,
+            statusMessage: 'Sync is off — showing local catalog only',
+            viewState: files.isEmpty
+                ? CatalogViewState.empty
+                : CatalogViewState.degraded,
+          ),
+        );
+      }
+      await _emitBrowseList();
+      return;
+    }
+
+    void onIngest(IngestFileProgress p) {
+      if (!isClosed) emit(state.copyWith(ingestProgress: p));
+    }
+
+    final result = await sync.sync(onIngestProgress: onIngest);
     if (isClosed) return;
 
-    // Scan + ingest when rules exist (no-op if empty).
+    // Scan + ingest when rules exist (no-op if empty); one file at a time.
     try {
-      await scanner.scanAndIngest();
+      await scanner.scanAndIngest(onProgress: onIngest);
     } catch (e) {
       log.warn('catalog', 'tracking scan failed: $e');
     }
@@ -301,6 +356,7 @@ class CatalogCubit extends Cubit<CatalogState> {
         state.copyWith(
           refreshing: false,
           clearStatusMessage: true,
+          clearIngestProgress: true,
         ),
       );
       await _emitBrowseList();
@@ -310,6 +366,7 @@ class CatalogCubit extends Cubit<CatalogState> {
       emit(
         state.copyWith(
           refreshing: false,
+          clearIngestProgress: true,
           statusMessage: err,
           viewState: files.isEmpty
               ? CatalogViewState.error
@@ -323,7 +380,19 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<void> onRulesChanged() async {
     final rules = await tracking.listRules();
     if (!isClosed) emit(state.copyWith(rules: rules));
-    await scanner.scanAndIngest();
+    if (!settings.syncEnabled) {
+      await _emitBrowseList();
+      return;
+    }
+    try {
+      await scanner.scanAndIngest(
+        onProgress: (p) {
+          if (!isClosed) emit(state.copyWith(ingestProgress: p));
+        },
+      );
+    } finally {
+      if (!isClosed) emit(state.copyWith(clearIngestProgress: true));
+    }
     await _emitBrowseList();
   }
 
@@ -383,6 +452,58 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
   }
 
+  /// Soft-delete on the PC; drops local listing + unreferenced pin bytes.
+  Future<String?> deleteFromPc(String fileId) async {
+    if (fileId.startsWith('local:')) {
+      return 'Not on the PC yet — sync first or remove the tracking rule';
+    }
+    emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
+    try {
+      final tombstoned = await api.deleteFile(fileId);
+      await repository.applyTombstone(tombstoned);
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      if (!isClosed) {
+        emit(state.copyWith(clearBusyFileId: true));
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'delete from PC failed: $e');
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            clearBusyFileId: true,
+            statusMessage: e.toString(),
+          ),
+        );
+      }
+      return e.toString();
+    }
+  }
+
+  /// Toggle "bound to server": PC tombstone also deletes local pin bytes.
+  Future<String?> setBoundToServer(String fileId, {required bool bound}) async {
+    if (fileId.startsWith('local:')) {
+      return 'Pin this file first';
+    }
+    final file = await repository.getFile(fileId);
+    if (file == null) return 'file not found';
+    if (!file.isPinned) {
+      return 'Bound to server is only available for pinned files';
+    }
+    try {
+      await repository.setBoundToServer(fileId, bound: bound);
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'bound to server failed: $e');
+      return e.toString();
+    }
+  }
+
   /// Returns local bytes when materialised; null if listed-only / missing.
   Future<Uint8List?> openLocalBytes(CatalogFile file) {
     return pinService.openLocalBytes(file);
@@ -399,6 +520,7 @@ class CatalogCubit extends Cubit<CatalogState> {
 
   @override
   Future<void> close() async {
+    settings.removeListener(_onSettingsChanged);
     await _filesSub?.cancel();
     await _rulesSub?.cancel();
     return super.close();

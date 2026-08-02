@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
+import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:http/http.dart' as http;
@@ -238,23 +239,247 @@ class HomesyncApi {
     required String algo,
     required String hexHash,
     required Uint8List bytes,
+    void Function(int sent, int total)? onProgress,
+  }) {
+    return putBlobStream(
+      algo: algo,
+      hexHash: hexHash,
+      contentLength: bytes.length,
+      body: Stream<List<int>>.fromIterable(
+        _chunkBytes(bytes, ContentHash.chunkSize),
+      ),
+      onProgress: onProgress,
+    );
+  }
+
+  /// Streamed one-shot CAS upload (kept for small / legacy callers).
+  Future<void> putBlobStream({
+    required String algo,
+    required String hexHash,
+    required int contentLength,
+    required Stream<List<int>> body,
+    void Function(int sent, int total)? onProgress,
   }) async {
     refreshBaseUrlFromSettings();
-    final response = await _send(
-      'PUT /v1/blobs/$algo/…',
-      _client
-          .put(
-            _uri('/v1/blobs/$algo/$hexHash'),
-            headers: {'Content-Type': 'application/octet-stream'},
-            body: bytes,
-          )
-          .timeout(const Duration(seconds: 120)),
+    final request = http.StreamedRequest(
+      'PUT',
+      _uri('/v1/blobs/$algo/$hexHash'),
     );
-    if (response.statusCode != 200 && response.statusCode != 201) {
+    request.headers['Content-Type'] = 'application/octet-stream';
+    request.contentLength = contentLength;
+
+    // Large uploads: scale timeout with size (min 2m, ~1s per MiB, cap 6h).
+    final uploadTimeout = Duration(
+      seconds: (120 + (contentLength ~/ (1024 * 1024))).clamp(120, 6 * 3600),
+    );
+
+    try {
+      final responseFuture = _client.send(request).timeout(uploadTimeout);
+      var sent = 0;
+      await for (final chunk in body) {
+        request.sink.add(chunk);
+        sent += chunk.length;
+        onProgress?.call(sent, contentLength);
+      }
+      await request.sink.close();
+      final streamed = await responseFuture;
+      final response = await http.Response.fromStream(streamed)
+          .timeout(const Duration(seconds: 60));
+      _log.fine('api', 'PUT /v1/blobs/… → HTTP ${response.statusCode}');
+      if (response.statusCode != 200 && response.statusCode != 201) {
+        throw HomesyncApiException(
+          'blob upload failed',
+          statusCode: response.statusCode,
+        );
+      }
+    } on TimeoutException {
+      _log.error('api', 'PUT /v1/blobs timed out');
+      throw HomesyncApiException('request timed out');
+    } on SocketException catch (e) {
+      _log.error('api', 'PUT /v1/blobs network error', e);
+      throw HomesyncApiException('network error: ${e.message}');
+    } on http.ClientException catch (e) {
+      _log.error('api', 'PUT /v1/blobs client error', e);
+      throw HomesyncApiException('network error: ${e.message}');
+    }
+  }
+
+  /// Chunk size for resumable PATCH uploads (server acks each offset).
+  static const uploadChunkSize = 4 * 1024 * 1024;
+
+  /// Per-chunk idle timeout: last byte of a chunk within this window is OK.
+  static const chunkTimeout = Duration(hours: 1);
+
+  /// Resumable CAS upload: begin session → PATCH chunks → server offset ack.
+  ///
+  /// [readAt] returns up to [length] bytes starting at [offset]. On stall or
+  /// disconnect, the client re-GETs status and continues from the acked offset.
+  Future<void> putBlobResumable({
+    required String algo,
+    required String hexHash,
+    required int contentLength,
+    required Future<Uint8List> Function(int offset, int length) readAt,
+    void Function(int sent, int total)? onProgress,
+    int chunkSize = uploadChunkSize,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final begin = await _send(
+      'POST /v1/blob-uploads',
+      _client.post(
+        _uri('/v1/blob-uploads'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'algo': algo,
+          'content_hash': hexHash,
+          'size_bytes': contentLength,
+        }),
+      ),
+    );
+    if (begin.statusCode != 200) {
       throw HomesyncApiException(
-        'blob upload failed',
-        statusCode: response.statusCode,
+        'blob upload begin failed',
+        statusCode: begin.statusCode,
       );
+    }
+    final beginJson = jsonDecode(begin.body) as Map<String, dynamic>;
+    final uploadId = beginJson['upload_id'] as String;
+    var offset = beginJson['offset'] as int;
+    final complete = beginJson['complete'] as bool? ?? false;
+    onProgress?.call(offset, contentLength);
+    if (complete || offset >= contentLength) {
+      _log.fine('api', 'blob upload already complete ($uploadId)');
+      return;
+    }
+
+    var attempt = 0;
+    while (offset < contentLength) {
+      final length = (contentLength - offset).clamp(0, chunkSize);
+      final chunk = await readAt(offset, length);
+      if (chunk.isEmpty && length > 0) {
+        throw HomesyncApiException('read returned empty at offset $offset');
+      }
+
+      try {
+        final response = await _client
+            .patch(
+              _uri('/v1/blob-uploads/$uploadId'),
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                'Upload-Offset': '$offset',
+                'Content-Length': '${chunk.length}',
+              },
+              body: chunk,
+            )
+            .timeout(chunkTimeout);
+        _log.fine(
+          'api',
+          'PATCH /v1/blob-uploads/… @$offset +${chunk.length} '
+          '→ HTTP ${response.statusCode}',
+        );
+
+        if (response.statusCode == 409) {
+          final serverOff = int.tryParse(
+            response.headers['upload-offset'] ?? '',
+          );
+          if (serverOff != null) {
+            offset = serverOff;
+            onProgress?.call(offset, contentLength);
+            attempt = 0;
+            continue;
+          }
+          throw HomesyncApiException(
+            'blob upload offset conflict',
+            statusCode: 409,
+          );
+        }
+        if (response.statusCode == 410) {
+          throw HomesyncApiException(
+            'blob upload expired; restart',
+            statusCode: 410,
+          );
+        }
+        if (response.statusCode != 204 && response.statusCode != 200) {
+          throw HomesyncApiException(
+            'blob upload chunk failed',
+            statusCode: response.statusCode,
+          );
+        }
+
+        final acked = int.tryParse(response.headers['upload-offset'] ?? '');
+        if (acked == null) {
+          throw HomesyncApiException('missing Upload-Offset ack');
+        }
+        offset = acked;
+        onProgress?.call(offset, contentLength);
+        attempt = 0;
+
+        final done = response.headers['x-upload-complete'] == '1';
+        if (done || offset >= contentLength) {
+          return;
+        }
+      } on TimeoutException {
+        _log.warn('api', 'chunk timed out at $offset; polling resume');
+        offset = await _pollUploadOffset(uploadId, contentLength);
+        onProgress?.call(offset, contentLength);
+        attempt += 1;
+        await Future<void>.delayed(_retryDelay(attempt));
+      } on SocketException catch (e) {
+        _log.warn('api', 'chunk network error at $offset: $e; resume');
+        offset = await _pollUploadOffset(uploadId, contentLength);
+        onProgress?.call(offset, contentLength);
+        attempt += 1;
+        if (attempt > 12) {
+          throw HomesyncApiException('network error: ${e.message}');
+        }
+        await Future<void>.delayed(_retryDelay(attempt));
+      } on http.ClientException catch (e) {
+        _log.warn('api', 'chunk client error at $offset: $e; resume');
+        offset = await _pollUploadOffset(uploadId, contentLength);
+        onProgress?.call(offset, contentLength);
+        attempt += 1;
+        if (attempt > 12) {
+          throw HomesyncApiException('network error: ${e.message}');
+        }
+        await Future<void>.delayed(_retryDelay(attempt));
+      } on HomesyncApiException {
+        rethrow;
+      }
+    }
+  }
+
+  Future<int> _pollUploadOffset(String uploadId, int contentLength) async {
+    final status = await _send(
+      'GET /v1/blob-uploads/$uploadId',
+      _client.get(_uri('/v1/blob-uploads/$uploadId')),
+    );
+    if (status.statusCode == 404) {
+      // Session wiped after finalize — treat as complete.
+      return contentLength;
+    }
+    if (status.statusCode != 200) {
+      throw HomesyncApiException(
+        'blob upload status failed',
+        statusCode: status.statusCode,
+      );
+    }
+    final json = jsonDecode(status.body) as Map<String, dynamic>;
+    if (json['complete'] == true) {
+      return contentLength;
+    }
+    return json['offset'] as int;
+  }
+
+  static Duration _retryDelay(int attempt) {
+    final seconds = (1 << attempt.clamp(0, 6)).clamp(1, 60);
+    return Duration(seconds: seconds);
+  }
+
+  static Iterable<List<int>> _chunkBytes(Uint8List bytes, int chunkSize) sync* {
+    var offset = 0;
+    while (offset < bytes.length) {
+      final end = (offset + chunkSize).clamp(0, bytes.length);
+      yield bytes.sublist(offset, end);
+      offset = end;
     }
   }
 
@@ -271,6 +496,27 @@ class HomesyncApi {
     if (response.statusCode != 200) {
       throw HomesyncApiException(
         'file create failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Soft-delete on the PC catalog (sets `deleted_at`; blob GC deferred).
+  Future<CatalogFile> deleteFile(String fileId) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'DELETE /v1/files/$fileId',
+      _client.delete(_uri('/v1/files/$fileId')),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('file not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'file delete failed',
         statusCode: response.statusCode,
       );
     }

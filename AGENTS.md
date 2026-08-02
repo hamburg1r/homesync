@@ -115,6 +115,7 @@ $data_root/   # managed store (catalog + blobs), not library roots
       ab/                   # hash[0:2]
         cd/                 # hash[2:4]
           <full_hex_hash>   # raw bytes, no extension
+  uploads/                  # resumable partials; promote into blobs/ on complete
   thumbs/                   # optional, derived
     <file_id or hash>.jpg
   quarantine/               # collision / integrity rejects only (not normal store)

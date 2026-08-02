@@ -6,7 +6,7 @@ enum BrowseMode {
   untrackedOnDevice,
 }
 
-enum TrackingRuleKind { regex, folder }
+enum TrackingRuleKind { regex, folder, file }
 
 extension TrackingRuleKindWire on TrackingRuleKind {
   String get wire => name;
@@ -15,6 +15,8 @@ extension TrackingRuleKindWire on TrackingRuleKind {
     switch (raw.trim().toLowerCase()) {
       case 'folder':
         return TrackingRuleKind.folder;
+      case 'file':
+        return TrackingRuleKind.file;
       case 'regex':
       default:
         return TrackingRuleKind.regex;
@@ -39,8 +41,15 @@ class TrackingRule {
   final bool enabled;
   final String createdAt;
 
-  String get summary =>
-      kind == TrackingRuleKind.folder ? patternOrUri : patternOrUri;
+  String get summary {
+    switch (kind) {
+      case TrackingRuleKind.folder:
+      case TrackingRuleKind.file:
+        return patternOrUri;
+      case TrackingRuleKind.regex:
+        return patternOrUri;
+    }
+  }
 }
 
 enum IngestStatus { pending, synced, failed, untracked }

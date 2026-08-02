@@ -25,9 +25,9 @@ void main() {
       () async {
     final payload = Uint8List.fromList(utf8.encode('camera photo from phone\n'));
     final hash = ContentHash.blake3Hex(payload);
-    var putCount = 0;
+    var patchCount = 0;
     var createCount = 0;
-    var failPutOnce = true;
+    var failPatchOnce = true;
 
     harness = await TestCatalogHarness.open(
       MockClient((request) async {
@@ -51,23 +51,25 @@ void main() {
             headers: {'content-type': 'application/json'},
           );
         }
-        if (request.method == 'PUT' && request.url.path.contains('/blobs/')) {
-          putCount += 1;
-          if (failPutOnce) {
-            failPutOnce = false;
-            return http.Response('offline', 503);
+        final upload = mockBlobUploadResponse(
+          request,
+          patchStatus: () {
+            patchCount += 1;
+            if (failPatchOnce) {
+              failPatchOnce = false;
+              return 503;
+            }
+            return 204;
+          },
+        );
+        if (upload != null) {
+          if (request.method == 'PATCH') {
+            expect(request.url.path, contains(hash));
+            if (upload.statusCode == 204) {
+              expect(request.bodyBytes, payload);
+            }
           }
-          expect(request.url.path, contains(hash));
-          expect(request.bodyBytes, payload);
-          return http.Response(
-            '',
-            201,
-            headers: {
-              'x-content-hash': hash,
-              'x-hash-algo': 'blake3',
-              'x-blob-created': '1',
-            },
-          );
+          return upload;
         }
         if (request.method == 'POST' && request.url.path.endsWith('/files')) {
           createCount += 1;
@@ -119,14 +121,14 @@ void main() {
     );
     expect(await harness.blobs.has('blake3', hash), isTrue);
     expect(await harness.ingestQueue.list(), hasLength(1));
-    expect(putCount, 1);
+    expect(patchCount, 1);
     expect(createCount, 0);
 
     // Reconnect sync flushes the durable queue.
     final result = await harness.sync.sync();
     expect(result.ok, isTrue);
     expect(result.ingestsFlushed, 1);
-    expect(putCount, 2);
+    expect(patchCount, 2);
     expect(createCount, 1);
     expect(await harness.ingestQueue.list(), isEmpty);
 

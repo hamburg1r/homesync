@@ -55,6 +55,7 @@ class IngestQueue {
     String? title,
     String sourceKind = 'misc',
     String? relativePath,
+    String? sourcePath,
   }) {
     return IngestQueueItem(
       id: const Uuid().v4(),
@@ -65,6 +66,7 @@ class IngestQueue {
       title: title,
       sourceKind: sourceKind,
       relativePath: relativePath,
+      sourcePath: sourcePath,
       createdAt: DateTime.now().toUtc().toIso8601String(),
     );
   }
@@ -80,6 +82,7 @@ class IngestQueueItem {
     this.title,
     this.sourceKind = 'misc',
     this.relativePath,
+    this.sourcePath,
     required this.createdAt,
   });
 
@@ -91,6 +94,8 @@ class IngestQueueItem {
   final String? title;
   final String sourceKind;
   final String? relativePath;
+  /// Absolute path for streamed retry when pin store was not filled yet.
+  final String? sourcePath;
   final String createdAt;
 
   Map<String, dynamic> toJson() => {
@@ -102,6 +107,7 @@ class IngestQueueItem {
         'title': title,
         'source_kind': sourceKind,
         'relative_path': relativePath,
+        'source_path': sourcePath,
         'created_at': createdAt,
       };
 
@@ -115,6 +121,7 @@ class IngestQueueItem {
       title: json['title'] as String?,
       sourceKind: json['source_kind'] as String? ?? 'misc',
       relativePath: json['relative_path'] as String?,
+      sourcePath: json['source_path'] as String?,
       createdAt: json['created_at'] as String,
     );
   }

@@ -75,10 +75,56 @@ class LocalBlobStore {
     );
   }
 
+  /// Copy [source] into the pin store via chunked IO (no full-file RAM buffer).
+  Future<void> copyFile(
+    String algo,
+    String hexHash,
+    File source, {
+    void Function(int copied, int total)? onProgress,
+  }) async {
+    final dest = await pathFor(algo, hexHash);
+    await dest.parent.create(recursive: true);
+    final tmp = File('${dest.path}.tmp');
+    final total = await source.length();
+    var copied = 0;
+    final reader = source.openRead();
+    final sink = tmp.openWrite();
+    try {
+      await for (final chunk in reader) {
+        sink.add(chunk);
+        copied += chunk.length;
+        onProgress?.call(copied, total);
+      }
+      await sink.flush();
+      await sink.close();
+      if (await dest.exists()) {
+        await dest.delete();
+      }
+      await tmp.rename(dest.path);
+    } catch (_) {
+      await sink.close();
+      if (await tmp.exists()) await tmp.delete();
+      rethrow;
+    }
+    _log.info(
+      'blobs',
+      'copied $copied bytes $algo/${hexHash.substring(0, 8)}…',
+    );
+  }
+
   Future<Uint8List?> read(String algo, String hexHash) async {
     final file = await pathFor(algo, hexHash);
     if (!await file.exists()) return null;
     return file.readAsBytes();
+  }
+
+  /// Stream pin bytes for upload without loading the whole object.
+  Stream<List<int>> openRead(String algo, String hexHash) async* {
+    final file = await pathFor(algo, hexHash);
+    if (!await file.exists()) {
+      throw StateError('blob missing $algo/$hexHash');
+    }
+    yield* file.openRead();
   }
 
   Future<void> delete(String algo, String hexHash) async {

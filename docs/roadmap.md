@@ -183,3 +183,7 @@ Record important choices here as they happen.
 | 2026-08-03 | Phone tracking rules (regex + folder) + drawer browse; path-inferred source_kind; misc default group name | Full FS walk not MediaStore; folder/tag browse Later |
 | 2026-08-03 | Milestone 6: provenance in catalog UI; Bring to phone = pin; tombstone drops listing + local bytes | Ghost restore via paths mirror + existing pin/blob APIs |
 | 2026-08-03 | Milestone 7: Pillow thumbs via uv; GET /v1/thumbs; has_thumb hint; GET /v1/files?q= | Listed-mode JPEG cache by content hash; basic LIKE search (FTS Later) |
+| 2026-08-03 | Phone: sync pause + Remove from PC + file tracking rules | Pause skips delta/ingest; soft-delete via existing DELETE; single-path rules |
+| 2026-08-03 | Phone `pin_server_binds`: Bound to server → delete pin on tombstone | Default keeps local bytes after PC soft-delete; opt-in for pinned only |
+| 2026-08-03 | Phone→PC ingest from original path only (no `homesync_pins` copy) | Avoid duplicating camera/Downloads under app storage; pin store stays PC→phone |
+| 2026-08-03 | Resumable blob uploads: `POST/PATCH /v1/blob-uploads` + offset ack | Large-folder stalls; reconnect resumes; 4 MiB chunks; 1h chunk timeout; partials ≤7d |

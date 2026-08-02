@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/app/injection.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sheet.dart';
@@ -46,10 +47,17 @@ class CatalogPage extends StatelessWidget {
           deviceAndSyncedOnly: state.deviceAndSyncedOnly,
           rules: state.rules,
           searchQuery: state.searchQuery,
+          syncEnabled: state.syncEnabled,
+          ingestProgress: state.ingestProgress,
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
           onPin: (file) => context.read<CatalogCubit>().pinFile(file.fileId),
           onUnpin: (file) => context.read<CatalogCubit>().unpinFile(file.fileId),
+          onDeleteFromPc: (file) =>
+              context.read<CatalogCubit>().deleteFromPc(file.fileId),
+          onBoundToServer: (file, bound) => context
+              .read<CatalogCubit>()
+              .setBoundToServer(file.fileId, bound: bound),
           onOpen: (file) => _openFile(context, file),
           onSelectBrowse: (mode, {ruleId, title}) => context
               .read<CatalogCubit>()
@@ -126,10 +134,14 @@ class CatalogBrowseView extends StatelessWidget {
     this.deviceAndSyncedOnly = false,
     this.rules = const [],
     this.searchQuery = '',
+    this.syncEnabled = true,
+    this.ingestProgress,
     this.onRefresh,
     this.onOpenSettings,
     this.onPin,
     this.onUnpin,
+    this.onDeleteFromPc,
+    this.onBoundToServer,
     this.onOpen,
     this.onSelectBrowse,
     this.onToggleDeviceSynced,
@@ -147,10 +159,14 @@ class CatalogBrowseView extends StatelessWidget {
   final bool deviceAndSyncedOnly;
   final List<TrackingRule> rules;
   final String searchQuery;
+  final bool syncEnabled;
+  final IngestFileProgress? ingestProgress;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final void Function(
     BrowseMode mode, {
@@ -303,7 +319,46 @@ class CatalogBrowseView extends StatelessWidget {
                 onChanged: onSearchChanged!,
               ),
             ),
-          if (state == CatalogViewState.degraded && statusMessage != null)
+          if (ingestProgress != null)
+            Material(
+              elevation: 1,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '${ingestProgress!.phase} '
+                      '${ingestProgress!.index}/${ingestProgress!.total}: '
+                      '${ingestProgress!.title}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 6),
+                    LinearProgressIndicator(
+                      value: ingestProgress!.overall,
+                      minHeight: 4,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!syncEnabled)
+            MaterialBanner(
+              content: Text(
+                statusMessage ??
+                    'Sync is off — pull to refresh only reloads the local catalog.',
+              ),
+              leading: const Icon(Icons.sync_disabled),
+              actions: [
+                TextButton(
+                  onPressed: onOpenSettings,
+                  child: const Text('Settings'),
+                ),
+              ],
+            )
+          else if (state == CatalogViewState.degraded && statusMessage != null)
             MaterialBanner(
               content: Text(
                 'Showing local catalog (offline/degraded): $statusMessage',
@@ -373,6 +428,8 @@ class CatalogBrowseView extends StatelessWidget {
                 busy: busyFileId == file.fileId,
                 onPin: onPin,
                 onUnpin: onUnpin,
+                onDeleteFromPc: onDeleteFromPc,
+                onBoundToServer: onBoundToServer,
                 onOpen: onOpen,
                 onLoadThumb: onLoadThumb,
               );
@@ -457,6 +514,8 @@ class _FileTile extends StatelessWidget {
     required this.busy,
     this.onPin,
     this.onUnpin,
+    this.onDeleteFromPc,
+    this.onBoundToServer,
     this.onOpen,
     this.onLoadThumb,
   });
@@ -465,6 +524,8 @@ class _FileTile extends StatelessWidget {
   final bool busy;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<File?> Function(CatalogFile file)? onLoadThumb;
 
@@ -514,6 +575,8 @@ class _FileTile extends StatelessWidget {
             busy: busy,
             onPin: onPin,
             onUnpin: onUnpin,
+            onDeleteFromPc: onDeleteFromPc,
+            onBoundToServer: onBoundToServer,
             onOpen: onOpen,
           ),
         );
@@ -560,12 +623,14 @@ class _ThumbOrIcon extends StatelessWidget {
   }
 }
 
-class _FileDetailSheet extends StatelessWidget {
+class _FileDetailSheet extends StatefulWidget {
   const _FileDetailSheet({
     required this.file,
     required this.busy,
     this.onPin,
     this.onUnpin,
+    this.onDeleteFromPc,
+    this.onBoundToServer,
     this.onOpen,
   });
 
@@ -573,11 +638,79 @@ class _FileDetailSheet extends StatelessWidget {
   final bool busy;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
+  final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
 
   @override
+  State<_FileDetailSheet> createState() => _FileDetailSheetState();
+}
+
+class _FileDetailSheetState extends State<_FileDetailSheet> {
+  late bool _bound;
+  bool _bindingBusy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _bound = widget.file.boundToServer;
+  }
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove from PC?'),
+        content: Text(
+          'Soft-delete “${widget.file.displayName}” on the server. '
+          'It will disappear from catalogs; blob GC is not run yet.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final err = await widget.onDeleteFromPc!(widget.file);
+    if (context.mounted) {
+      Navigator.pop(context);
+      if (err != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+    }
+  }
+
+  Future<void> _setBound(bool value) async {
+    final cb = widget.onBoundToServer;
+    if (cb == null) return;
+    setState(() => _bindingBusy = true);
+    final err = await cb(widget.file, value);
+    if (!mounted) return;
+    setState(() {
+      _bindingBusy = false;
+      if (err == null) _bound = value;
+    });
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final file = widget.file;
+    final busy = widget.busy;
     final bringLabel = file.isGhost ? 'Bring to phone' : 'Pin';
+    final canDeleteFromPc =
+        widget.onDeleteFromPc != null && !file.fileId.startsWith('local:');
+    final showBoundToggle =
+        file.isPinned && widget.onBoundToServer != null;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       child: Column(
@@ -601,30 +734,42 @@ class _FileDetailSheet extends StatelessWidget {
           if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
           if (file.notes != null && file.notes!.isNotEmpty)
             Text('Notes: ${file.notes}'),
+          if (showBoundToggle) ...[
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Bound to server'),
+              subtitle: const Text(
+                'Delete this pin if the PC removes the file',
+              ),
+              value: _bound,
+              onChanged: (busy || _bindingBusy) ? null : _setBound,
+            ),
+          ],
           const SizedBox(height: 16),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              if (file.hasLocalBytes && onOpen != null)
+              if (file.hasLocalBytes && widget.onOpen != null)
                 FilledButton.icon(
                   onPressed: busy
                       ? null
                       : () async {
                           Navigator.pop(context);
-                          await onOpen!(file);
+                          await widget.onOpen!(file);
                         },
                   icon: const Icon(Icons.open_in_new),
                   label: const Text('Open'),
                 ),
               if (!file.isPinned &&
-                  onPin != null &&
+                  widget.onPin != null &&
                   !file.fileId.startsWith('local:'))
                 FilledButton.icon(
                   onPressed: busy
                       ? null
                       : () async {
-                          final err = await onPin!(file);
+                          final err = await widget.onPin!(file);
                           if (context.mounted) {
                             Navigator.pop(context);
                             if (err != null) {
@@ -641,12 +786,12 @@ class _FileDetailSheet extends StatelessWidget {
                   ),
                   label: Text(bringLabel),
                 ),
-              if (file.isPinned && onUnpin != null)
+              if (file.isPinned && widget.onUnpin != null)
                 OutlinedButton.icon(
                   onPressed: busy
                       ? null
                       : () async {
-                          final err = await onUnpin!(file);
+                          final err = await widget.onUnpin!(file);
                           if (context.mounted) {
                             Navigator.pop(context);
                             if (err != null) {
@@ -658,6 +803,18 @@ class _FileDetailSheet extends StatelessWidget {
                         },
                   icon: const Icon(Icons.push_pin),
                   label: const Text('Unpin'),
+                ),
+              if (canDeleteFromPc)
+                OutlinedButton.icon(
+                  onPressed: busy ? null : () => _confirmDelete(context),
+                  icon: Icon(
+                    Icons.delete_outline,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  label: Text(
+                    'Remove from PC',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
                 ),
               if (!file.hasLocalBytes)
                 TextButton(

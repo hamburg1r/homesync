@@ -55,6 +55,10 @@ abstract class CatalogFile with _$CatalogFile {
     bool hasLocalBytes,
     /// Best-effort provenance from mirrored `file_paths` (local join).
     @JsonKey(includeFromJson: false, includeToJson: false) String? primarySourceKind,
+    /// Local policy: PC tombstone also deletes pin bytes (pinned files only).
+    @JsonKey(includeFromJson: false, includeToJson: false)
+    @Default(false)
+    bool boundToServer,
   }) = _CatalogFile;
 
   factory CatalogFile.fromJson(Map<String, dynamic> json) =>

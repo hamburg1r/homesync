@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
@@ -106,6 +107,69 @@ http.Response availabilityOkResponse({
       200,
       headers: {'content-type': 'application/json'},
     );
+
+/// Mock handler for resumable `POST/PATCH/GET /v1/blob-uploads…`.
+/// Returns null when [request] is not a blob-upload call.
+http.Response? mockBlobUploadResponse(
+  http.Request request, {
+  int Function()? patchStatus,
+}) {
+  final path = request.url.path;
+  if (request.method == 'POST' && path.endsWith('/blob-uploads')) {
+    final body = jsonDecode(request.body) as Map<String, dynamic>;
+    final algo = body['algo'] as String? ?? 'blake3';
+    final hash = body['content_hash'] as String;
+    final size = body['size_bytes'] as int;
+    return http.Response(
+      jsonEncode({
+        'upload_id': '$algo:$hash',
+        'algo': algo,
+        'content_hash': hash,
+        'size_bytes': size,
+        'offset': 0,
+        'complete': false,
+        'last_activity': '2026-08-03T00:00:00Z',
+      }),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+  }
+  if (request.method == 'GET' && path.contains('/blob-uploads/')) {
+    final id = path.split('/blob-uploads/').last;
+    final parts = id.split(':');
+    return http.Response(
+      jsonEncode({
+        'upload_id': id,
+        'algo': parts.first,
+        'content_hash': parts.length > 1 ? parts.sublist(1).join(':') : '',
+        'size_bytes': 0,
+        'offset': 0,
+        'complete': false,
+        'last_activity': '2026-08-03T00:00:00Z',
+      }),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+  }
+  if (request.method == 'PATCH' && path.contains('/blob-uploads/')) {
+    final status = patchStatus?.call() ?? 204;
+    if (status != 204 && status != 200) {
+      return http.Response('fail', status);
+    }
+    final offset = int.parse(request.headers['upload-offset'] ?? '0');
+    final newOffset = offset + request.bodyBytes.length;
+    return http.Response(
+      '',
+      204,
+      headers: {
+        'upload-offset': '$newOffset',
+        'upload-length': '$newOffset',
+        'x-upload-complete': '1',
+      },
+    );
+  }
+  return null;
+}
 
 class TestCatalogHarness {
   TestCatalogHarness({

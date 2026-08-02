@@ -86,18 +86,30 @@ Pinned files must appear in availability with `pinned` and trigger blob fetch.
 
 ## Blob transfer
 
-Implemented (Milestone 4 GET + Milestone 5 PUT):
+Implemented (Milestone 4 GET + Milestone 5 PUT + resumable uploads):
 
 ```http
 GET /v1/blobs/{algo}/{hash}
-PUT /v1/blobs/{algo}/{hash}
+PUT /v1/blobs/{algo}/{hash}          # one-shot (small / legacy)
+POST /v1/blob-uploads                # begin or resume session
+GET /v1/blob-uploads/{upload_id}     # poll acked offset
+PATCH /v1/blob-uploads/{upload_id}   # append chunk (Upload-Offset)
 ```
 
-Rules:
+**Resumable upload (phone ingest default):**
+
+1. Client hashes the file (BLAKE3), then `POST /v1/blob-uploads` with `{algo, content_hash, size_bytes}`.
+2. Server returns `upload_id` (`algo:hash`) and current `offset` (0 for new; resume if a partial exists).
+3. Client `PATCH`es ~4 MiB chunks with header `Upload-Offset: <acked>`. Response `Upload-Offset` is the new ack (TCP-style).
+4. Offset mismatch → `409` + `Upload-Offset` of the server’s truth; client syncs and continues.
+5. When `offset == size_bytes`, server verifies hash, promotes into managed CAS, and sets `X-Upload-Complete: 1`.
+6. Disconnect / stall: client re-`GET`s status (or re-`POST`s begin) and continues from the acked offset. Partials live under `$data_root/uploads/…` for up to 7 days; per-chunk client timeout is 1 hour.
+
+Rules (one-shot PUT still apply):
 
 - `GET` resolves managed `blobs/<algo>/<hh>/<hh>/<hash>` first, then a current hash-in-place library path.
 - Unknown / missing on disk → `404` (catalog may still list file as degraded).
-- Hash mismatch on upload → `400`.
+- Hash mismatch on upload → `400` (PUT) or `409` (resumable finalize).
 - Identical existing blob → `200` dedup (`X-Blob-Created: 0`); new object → `201`.
 - Size/byte mismatch against an existing object → `409` (never overwrite).
 - Response includes `Content-Length`, `ETag`, `X-Content-Hash`, `X-Hash-Algo`. Prefer HTTP range requests when implementing resume.
@@ -170,6 +182,9 @@ Server should allow a device to update **its own** availability primarily. Cross
 Implemented (Milestone 5):
 
 ```http
+POST /v1/blob-uploads
+PATCH /v1/blob-uploads/{upload_id}   # Upload-Offset chunks until complete
+# (legacy one-shot still accepted:)
 PUT /v1/blobs/{algo}/{hash}
 POST /v1/files
 {
@@ -194,8 +209,12 @@ sequenceDiagram
   participant Store
   participant DB
 
-  Phone->>API: PUT /v1/blobs/blake3/{hash} (bytes)
-  API->>Store: store if absent
+  Phone->>API: POST /v1/blob-uploads (hash, size)
+  loop until offset == size
+    Phone->>API: PATCH chunk (Upload-Offset)
+    API-->>Phone: Upload-Offset ack
+  end
+  API->>Store: promote partial → CAS
   Phone->>API: POST /v1/files
   Note over Phone,API: includes provenance source_kind=camera, source_device_id=phone
   API->>DB: create file_id or dedup by hash
@@ -208,8 +227,9 @@ sequenceDiagram
 - Dedup by `(hash_algo, content_hash)` returns the existing `file_id` and attaches provenance when needed.
 - Standalone ingest uses `file_paths.root_id = NULL` and a synthetic `relative_path` under `ingest/<source_kind>/…`.
 - Linux retention: create pins the host `linux` device to `pinned` so the managed blob is kept.
-- Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync).
-- **Tracking rules (phone):** named regex/folder rules in Settings (empty = no auto upload). Group name optional (default `misc`). Scanner walks granted storage roots; `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the same queue.
+- Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync). Tracking ingest hashes and uploads **one file at a time** via **resumable chunked upload** from the **original path** (no app-storage duplicate). Pin store is only for PC→phone materialization / small in-memory ingest. UI shows per-file progress (hash → upload).
+- **Tracking rules (phone):** named regex/folder/**file** rules in Settings (empty = no auto upload). Group name optional (default `misc`). Scanner walks granted storage roots for regex/folder; file rules target one absolute path. `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the same queue.
+- **Sync pause (phone):** Settings → Sync with PC off skips catalog delta + tracking ingest; local catalog remains browsable. Soft-delete from a file’s detail sheet calls `DELETE /v1/files/{id}` (tombstone; blob GC still deferred).
 
 ## WhatsApp-style restore (canonical story)
 
@@ -236,7 +256,7 @@ flowchart TD
 - Phone mirrors paths locally and surfaces provenance (`from WhatsApp · on PC only` when listed without bytes).
 - **Bring to phone** = same as pin (availability `pinned` + blob GET).
 - Unpin deletes local bytes but keeps the catalog listing (ghost again).
-- Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the active listing and deletes any local materialised bytes. Blob GC on Linux remains deferred.
+- Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the active listing. Local pin bytes are deleted **only** if the file was marked **Bound to server** (pinned-only phone policy). Explicit **Remove from PC** on the phone still drops local bytes. Blob GC on Linux remains deferred.
 
 Provenance rows explain *why* it still exists (“imported from WhatsApp backup on nixos”).
 

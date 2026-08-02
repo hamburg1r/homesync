@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
@@ -9,6 +10,7 @@ import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:injectable/injectable.dart';
+import 'package:path/path.dart' as p;
 
 class IngestException implements Exception {
   IngestException(this.message, {this.statusCode});
@@ -20,7 +22,39 @@ class IngestException implements Exception {
   String toString() => message;
 }
 
-/// Phone → PC ingest: hash → local store → queue → PUT blob → POST file → pin.
+/// Progress for a single ingest (hash → upload → local pin).
+class IngestFileProgress {
+  const IngestFileProgress({
+    required this.title,
+    required this.index,
+    required this.total,
+    required this.phase,
+    required this.fraction,
+  });
+
+  final String title;
+  /// 1-based index among the current batch.
+  final int index;
+  final int total;
+  /// `hashing` | `uploading` | `storing` | `finishing`
+  final String phase;
+  /// 0.0–1.0 within [phase].
+  final double fraction;
+
+  /// Single 0–1 value for UI (hash 0–0.4, upload 0.4–0.95, finish 0.95–1).
+  double get overall {
+    final f = fraction.clamp(0.0, 1.0);
+    return switch (phase) {
+      'hashing' => f * 0.4,
+      'uploading' => 0.4 + f * 0.55,
+      _ => 0.95 + f * 0.05,
+    };
+  }
+}
+
+typedef IngestProgressCallback = void Function(IngestFileProgress progress);
+
+/// Phone → PC ingest: hash → queue → streamed PUT → POST file → pin.
 @lazySingleton
 class IngestService {
   IngestService({
@@ -39,14 +73,25 @@ class IngestService {
   final IngestQueue queue;
   final AppLog log;
 
-  /// Ingest bytes now (or leave durable queue entries if the network fails).
+  /// Ingest in-memory bytes (small payloads / tests).
   Future<CatalogFile> ingestBytes(
     Uint8List bytes, {
     String? title,
     String? mimeType,
     String sourceKind = 'misc',
     String? relativePath,
+    IngestProgressCallback? onProgress,
   }) async {
+    final display = title ?? 'upload';
+    onProgress?.call(
+      IngestFileProgress(
+        title: display,
+        index: 1,
+        total: 1,
+        phase: 'hashing',
+        fraction: 1,
+      ),
+    );
     final hash = ContentHash.blake3Hex(bytes);
     await blobs.write(ContentHash.algo, hash, bytes);
 
@@ -62,7 +107,71 @@ class IngestService {
     await queue.enqueue(item);
 
     try {
-      final file = await _flushItem(item);
+      final file = await _flushItem(
+        item,
+        onProgress: onProgress,
+        index: 1,
+        total: 1,
+      );
+      await queue.remove(item.id);
+      return file;
+    } catch (e) {
+      log.warn('ingest', 'queued for retry after failure: $e');
+      rethrow;
+    }
+  }
+
+  /// Stream-hash + upload one file without loading it fully into RAM.
+  Future<CatalogFile> ingestFile(
+    File source, {
+    String? title,
+    String? mimeType,
+    String sourceKind = 'misc',
+    String? relativePath,
+    int index = 1,
+    int total = 1,
+    IngestProgressCallback? onProgress,
+  }) async {
+    if (!await source.exists()) {
+      throw IngestException('file missing: ${source.path}');
+    }
+    final display = title ?? p.basename(source.path);
+    final size = await source.length();
+
+    final hash = await ContentHash.blake3File(
+      source,
+      onProgress: (done, totalBytes) {
+        onProgress?.call(
+          IngestFileProgress(
+            title: display,
+            index: index,
+            total: total,
+            phase: 'hashing',
+            fraction: totalBytes == 0 ? 1 : done / totalBytes,
+          ),
+        );
+      },
+    );
+
+    final item = IngestQueue.newItem(
+      contentHash: hash,
+      hashAlgo: ContentHash.algo,
+      sizeBytes: size,
+      mimeType: mimeType,
+      title: display,
+      sourceKind: sourceKind,
+      relativePath: relativePath,
+      sourcePath: source.path,
+    );
+    await queue.enqueue(item);
+
+    try {
+      final file = await _flushItem(
+        item,
+        onProgress: onProgress,
+        index: index,
+        total: total,
+      );
       await queue.remove(item.id);
       return file;
     } catch (e) {
@@ -72,36 +181,91 @@ class IngestService {
   }
 
   /// Flush any durable queue items (call on reconnect / catalog refresh).
-  Future<int> flushPending() async {
+  Future<int> flushPending({IngestProgressCallback? onProgress}) async {
     final items = await queue.list();
     var done = 0;
-    for (final item in items) {
+    for (var i = 0; i < items.length; i++) {
+      final item = items[i];
       try {
-        await _flushItem(item);
+        await _flushItem(
+          item,
+          onProgress: onProgress,
+          index: i + 1,
+          total: items.length,
+        );
         await queue.remove(item.id);
         done += 1;
       } catch (e) {
         log.warn('ingest', 'flush failed for ${item.id}: $e');
-        // Keep older items blocked; stop to preserve blob→file→avail order.
         break;
       }
     }
     return done;
   }
 
-  Future<CatalogFile> _flushItem(IngestQueueItem item) async {
-    final bytes = await blobs.read(item.hashAlgo, item.contentHash);
-    if (bytes == null) {
+  Future<CatalogFile> _flushItem(
+    IngestQueueItem item, {
+    IngestProgressCallback? onProgress,
+    int index = 1,
+    int total = 1,
+  }) async {
+    final display = item.title ?? item.contentHash;
+    final sourceFile =
+        item.sourcePath != null ? File(item.sourcePath!) : null;
+    final hasPin = await blobs.has(item.hashAlgo, item.contentHash);
+    final sourceOk = sourceFile != null && await sourceFile.exists();
+    if (!hasPin && !sourceOk) {
       throw IngestException(
         'local blob missing for queued ingest ${item.contentHash}',
       );
     }
 
     final deviceId = await identity.ensureDeviceId();
-    await api.putBlob(
+    final File bytesFile;
+    if (sourceFile != null && await sourceFile.exists()) {
+      bytesFile = sourceFile;
+    } else {
+      bytesFile = await blobs.pathFor(item.hashAlgo, item.contentHash);
+    }
+
+    await api.putBlobResumable(
       algo: item.hashAlgo,
       hexHash: item.contentHash,
-      bytes: bytes,
+      contentLength: item.sizeBytes,
+      readAt: (offset, length) async {
+        final raf = await bytesFile.open();
+        try {
+          await raf.setPosition(offset);
+          return await raf.read(length);
+        } finally {
+          await raf.close();
+        }
+      },
+      onProgress: (sent, totalBytes) {
+        onProgress?.call(
+          IngestFileProgress(
+            title: display,
+            index: index,
+            total: total,
+            phase: 'uploading',
+            fraction: totalBytes == 0 ? 1 : sent / totalBytes,
+          ),
+        );
+      },
+    );
+
+    // Phone↔PC: keep the original path as the on-device copy.
+    // Do not duplicate into app pin storage when uploading from sourcePath.
+    // (Pin store is only for PC→phone materialization / small ingestBytes.)
+
+    onProgress?.call(
+      IngestFileProgress(
+        title: display,
+        index: index,
+        total: total,
+        phase: 'finishing',
+        fraction: 0.5,
+      ),
     );
 
     final created = await api.createFile(
@@ -131,12 +295,25 @@ class IngestService {
       updatedAt: avail.updatedAt,
     );
 
-    log.info('ingest', 'ingested ${created.fileId} (${item.title ?? item.contentHash})');
+    onProgress?.call(
+      IngestFileProgress(
+        title: display,
+        index: index,
+        total: total,
+        phase: 'finishing',
+        fraction: 1,
+      ),
+    );
+
+    log.info(
+      'ingest',
+      'ingested ${created.fileId} (${item.title ?? item.contentHash})',
+    );
     final refreshed = await repository.getFile(created.fileId);
-    return refreshed ??
-        created.copyWith(
-          availabilityMode: AvailabilityMode.pinned,
-          hasLocalBytes: true,
-        );
+    final onDevice = hasPin || sourceOk || await blobs.has(item.hashAlgo, item.contentHash);
+    return (refreshed ?? created).copyWith(
+      availabilityMode: AvailabilityMode.pinned,
+      hasLocalBytes: onDevice,
+    );
   }
 }

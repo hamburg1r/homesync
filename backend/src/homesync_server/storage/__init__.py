@@ -57,3 +57,44 @@ def write_blob_atomic(dest: Path, data: bytes) -> None:
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
+
+
+def write_blob_stream_atomic(
+    dest: Path,
+    chunks: object,
+    *,
+    algo: str = DEFAULT_HASH_ALGO,
+    expected_size: int | None = None,
+) -> tuple[int, str]:
+    """Stream ``chunks`` of bytes to ``dest.tmp``, hash, return ``(size, hex)``.
+
+    Does **not** promote to ``dest`` — caller verifies digest then renames.
+    Raises ``ValueError`` when Content-Length is exceeded or undershot.
+    """
+    if algo != "blake3":
+        raise ValueError(f"Unsupported hash algo for v1: {algo}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    hasher = blake3.blake3()
+    size = 0
+    try:
+        with tmp.open("wb") as fh:
+            for chunk in chunks:  # type: ignore[attr-defined]
+                if not chunk:
+                    continue
+                data = bytes(chunk)
+                hasher.update(data)
+                fh.write(data)
+                size += len(data)
+                if expected_size is not None and size > expected_size:
+                    raise ValueError(
+                        f"body larger than Content-Length ({expected_size})"
+                    )
+        if expected_size is not None and size != expected_size:
+            raise ValueError(
+                f"size mismatch: Content-Length={expected_size}, got {size}"
+            )
+        return size, hasher.hexdigest()
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise

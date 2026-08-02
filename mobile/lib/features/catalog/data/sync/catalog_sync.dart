@@ -48,19 +48,28 @@ class CatalogSync {
   Future<SyncResult>? _inFlight;
 
   /// Concurrent callers share one in-flight sync (mutex).
-  Future<SyncResult> sync({int pageLimit = 500}) {
+  Future<SyncResult> sync({
+    int pageLimit = 500,
+    IngestProgressCallback? onIngestProgress,
+  }) {
     if (_inFlight != null) {
       log.fine('sync', 'joining in-flight sync');
       return _inFlight!;
     }
-    final future = _doSync(pageLimit: pageLimit);
+    final future = _doSync(
+      pageLimit: pageLimit,
+      onIngestProgress: onIngestProgress,
+    );
     _inFlight = future.whenComplete(() {
       _inFlight = null;
     });
     return _inFlight!;
   }
 
-  Future<SyncResult> _doSync({required int pageLimit}) async {
+  Future<SyncResult> _doSync({
+    required int pageLimit,
+    IngestProgressCallback? onIngestProgress,
+  }) async {
     api.refreshBaseUrlFromSettings();
     try {
       final deviceId = await identity.ensureDeviceId();
@@ -70,7 +79,7 @@ class CatalogSync {
       );
 
       // Blobs first (queue order), then pull catalog.
-      final flushed = await ingest.flushPending();
+      final flushed = await ingest.flushPending(onProgress: onIngestProgress);
 
       var cursor = await repository.getDeltaCursor();
       var pages = 0;

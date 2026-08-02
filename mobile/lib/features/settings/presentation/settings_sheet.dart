@@ -105,6 +105,28 @@ class _SettingsSheetState extends State<SettingsSheet> {
     await _reloadRules();
   }
 
+  Future<void> _addFileRule() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => const _FolderNameDialog(
+        title: 'File rule name',
+        confirmLabel: 'Pick file',
+      ),
+    );
+    if (name == null || !mounted) return;
+
+    final result = await FilePicker.pickFiles(allowMultiple: false);
+    final path = result?.files.isNotEmpty == true ? result!.files.first.path : null;
+    if (path == null || path.isEmpty) return;
+    await widget.tracking.addRule(
+      name: name,
+      kind: TrackingRuleKind.file,
+      patternOrUri: path,
+    );
+    widget.onRulesChanged?.call();
+    await _reloadRules();
+  }
+
   Future<void> _deleteRule(TrackingRule rule) async {
     await widget.tracking.deleteRule(rule.id);
     widget.onRulesChanged?.call();
@@ -162,6 +184,21 @@ class _SettingsSheetState extends State<SettingsSheet> {
             const SizedBox(height: 16),
             FilledButton(onPressed: _save, child: const Text('Save & sync')),
             const Divider(height: 32),
+            Text('Sync', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Sync with PC'),
+              subtitle: const Text(
+                'Catalog delta + tracking uploads. Off = browse local only.',
+              ),
+              value: widget.settings.syncEnabled,
+              onChanged: (value) async {
+                await widget.settings.setSyncEnabled(value);
+                setState(() {});
+              },
+            ),
+            const Divider(height: 32),
             Text('Appearance', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
@@ -210,7 +247,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
             const SizedBox(height: 4),
             Text(
               'Empty = no automatic upload. Regex matches filenames '
-              '(e.g. *.pdf). Folder rules ingest every file in that tree.',
+              '(e.g. *.pdf). Folder rules ingest every file in that tree. '
+              'File rules upload one chosen path.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
@@ -250,6 +288,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
+              runSpacing: 8,
               children: [
                 OutlinedButton.icon(
                   onPressed: _addRegexRule,
@@ -260,6 +299,11 @@ class _SettingsSheetState extends State<SettingsSheet> {
                   onPressed: _addFolderRule,
                   icon: const Icon(Icons.folder_outlined),
                   label: const Text('Add folder'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _addFileRule,
+                  icon: const Icon(Icons.insert_drive_file_outlined),
+                  label: const Text('Add file'),
                 ),
               ],
             ),
@@ -278,7 +322,13 @@ class _RuleDraft {
 }
 
 class _FolderNameDialog extends StatefulWidget {
-  const _FolderNameDialog();
+  const _FolderNameDialog({
+    this.title = 'Folder rule name',
+    this.confirmLabel = 'Pick folder',
+  });
+
+  final String title;
+  final String confirmLabel;
 
   @override
   State<_FolderNameDialog> createState() => _FolderNameDialogState();
@@ -296,7 +346,7 @@ class _FolderNameDialogState extends State<_FolderNameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Folder rule name'),
+      title: Text(widget.title),
       content: TextField(
         controller: _name,
         decoration: const InputDecoration(
@@ -315,7 +365,7 @@ class _FolderNameDialogState extends State<_FolderNameDialog> {
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context, _name.text),
-          child: const Text('Pick folder'),
+          child: Text(widget.confirmLabel),
         ),
       ],
     );

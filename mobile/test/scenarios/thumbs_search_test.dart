@@ -108,10 +108,12 @@ void main() {
     final cubit = CatalogCubit(
       repository: harness.repository,
       sync: harness.sync,
+      api: harness.api,
       pinService: harness.pinService,
       thumbService: harness.thumbService,
       tracking: harness.tracking,
       scanner: harness.scanner,
+      settings: harness.settings,
       log: harness.log,
     );
     await cubit.start();

@@ -133,6 +133,7 @@ $HOMESYNC_DATA/blobs/
     ab/                   # content_hash[0:2]
       cd/                 # content_hash[2:4]
         <full_hex_hash>   # raw file bytes
+$HOMESYNC_DATA/uploads/   # resumable partials (same fan-out); promote on complete
 ```
 
 Example: BLAKE3 digest `a1b2c3…` → `blobs/blake3/a1/b2/a1b2c3…`.
@@ -143,6 +144,7 @@ Example: BLAKE3 digest `a1b2c3…` → `blobs/blake3/a1/b2/a1b2c3…`.
 | Algo prefix | Matches `GET/PUT /v1/blobs/{algo}/{hash}`; allows hash migration without mixing digests. |
 | Filename | Full hex digest (not truncated); path is self-describing. |
 | Hash-in-place | Indexer may leave files under `library_roots` and only store hash+path in SQLite; this layout applies when bytes are **copied into** the managed store (phone ingest, unmanaged import, later dedup migration). |
+| Resumable | Phone ingest uses `POST/PATCH /v1/blob-uploads` with offset acks; partials under `uploads/` until hash-verified promote into `blobs/`. |
 | UX | Catalog is primary; do not rely on GUI-browsing `blobs/`. |
 | Writes | `blob_path(data_root, algo, hex_hash)` helper; create parents; write temp in same leaf dir; `rename` atomically. Missing blob on read → degraded/missing, not invented bytes. |
 
