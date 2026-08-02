@@ -2,6 +2,7 @@ import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:injectable/injectable.dart';
 
@@ -13,12 +14,14 @@ class SyncResult {
     this.error,
     this.pages = 0,
     this.filesTouched = 0,
+    this.ingestsFlushed = 0,
   });
 
   final SyncOutcome outcome;
   final Object? error;
   final int pages;
   final int filesTouched;
+  final int ingestsFlushed;
 
   bool get ok => outcome == SyncOutcome.ok;
 }
@@ -31,6 +34,7 @@ class CatalogSync {
     required this.repository,
     required this.identity,
     required this.settings,
+    required this.ingest,
     required this.log,
   });
 
@@ -38,6 +42,7 @@ class CatalogSync {
   final CatalogRepository repository;
   final DeviceIdentity identity;
   final SettingsStore settings;
+  final IngestService ingest;
   final AppLog log;
 
   Future<SyncResult>? _inFlight;
@@ -64,6 +69,9 @@ class CatalogSync {
         name: settings.deviceName,
       );
 
+      // Blobs first (queue order), then pull catalog.
+      final flushed = await ingest.flushPending();
+
       var cursor = await repository.getDeltaCursor();
       var pages = 0;
       var filesTouched = 0;
@@ -86,12 +94,14 @@ class CatalogSync {
 
       log.info(
         'sync',
-        'ok pages=$pages filesTouched=$filesTouched cursor=$cursor',
+        'ok pages=$pages filesTouched=$filesTouched '
+        'ingestsFlushed=$flushed cursor=$cursor',
       );
       return SyncResult(
         outcome: SyncOutcome.ok,
         pages: pages,
         filesTouched: filesTouched,
+        ingestsFlushed: flushed,
       );
     } catch (e, st) {
       log.error('sync', 'failed', e, st);

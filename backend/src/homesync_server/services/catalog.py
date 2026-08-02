@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from homesync_server.db import ensure_local_device
 from homesync_server.models import File, FilePath, FileTag, Tag
 from homesync_server.schemas.catalog import (
     CatalogDeltaOut,
@@ -15,9 +17,13 @@ from homesync_server.schemas.catalog import (
     FileTagOut,
     TagOut,
 )
-from homesync_server.util import new_uuid, next_updated_at
+from homesync_server.services import blobs as blob_svc
+from homesync_server.util import new_uuid, next_updated_at, utc_now_iso
 
 _CURSOR_PREFIX = "v1:"
+_ALLOWED_SOURCE_KINDS = frozenset(
+    {"camera", "whatsapp", "download", "manual", "unknown"}
+)
 
 
 class CatalogConflictError(Exception):
@@ -30,6 +36,10 @@ class CatalogConflictError(Exception):
 
 class NotFoundError(Exception):
     pass
+
+
+class IngestValidationError(Exception):
+    """Invalid ingest payload or missing prerequisite blob."""
 
 
 @dataclass(frozen=True)
@@ -159,6 +169,140 @@ def soft_delete_file(session: Session, file_id: str) -> File:
     row.updated_at = now
     session.flush()
     return row
+
+
+def _safe_ingest_name(title: str | None, content_hash: str) -> str:
+    raw = (title or "").strip() or content_hash[:16]
+    cleaned = "".join(c if c.isalnum() or c in "._-+" else "_" for c in raw)
+    return cleaned[:120] or content_hash[:16]
+
+
+def create_file(
+    session: Session,
+    data_root: Path,
+    *,
+    content_hash: str,
+    hash_algo: str,
+    size_bytes: int,
+    mime_type: str | None = None,
+    title: str | None = None,
+    taken_at: str | None = None,
+    source_kind: str = "camera",
+    source_device_id: str | None = None,
+    relative_path: str | None = None,
+) -> File:
+    """Create (or dedup) a catalog file after a managed blob PUT.
+
+    Requires the blob under ``blobs/<algo>/…``. Pins the Linux host to
+    ``pinned`` so ingested bytes are retained. Dedup by ``content_hash``
+    attaches a new provenance ``file_paths`` row when needed.
+    """
+    algo = hash_algo.strip().lower()
+    digest = content_hash.strip().lower()
+    kind = source_kind.strip().lower()
+    if kind not in _ALLOWED_SOURCE_KINDS:
+        raise IngestValidationError(
+            f"source_kind must be one of: {', '.join(sorted(_ALLOWED_SOURCE_KINDS))}"
+        )
+    if size_bytes < 0:
+        raise IngestValidationError("size_bytes must be >= 0")
+    if not blob_svc.managed_blob_exists(data_root, algo, digest):
+        raise IngestValidationError(
+            "blob not present in managed store; PUT /v1/blobs first"
+        )
+
+    from homesync_server.storage import blob_path
+
+    on_disk = blob_path(data_root, algo, digest)
+    actual_size = on_disk.stat().st_size
+    if actual_size != size_bytes:
+        raise IngestValidationError(
+            f"size_bytes mismatch: body claims {size_bytes}, on disk {actual_size}"
+        )
+
+    if source_device_id is not None:
+        from homesync_server.models import Device
+
+        device = session.scalars(
+            select(Device).where(Device.device_id == source_device_id)
+        ).first()
+        if device is None:
+            raise NotFoundError(f"device:{source_device_id}")
+
+    now = utc_now_iso()
+    existing = session.scalars(
+        select(File).where(File.content_hash == digest, File.hash_algo == algo)
+    ).first()
+
+    if existing is not None:
+        file_row = existing
+        # Revive soft-deleted row on re-ingest of the same hash.
+        if file_row.deleted_at is not None:
+            file_row.deleted_at = None
+        if title is not None and title != file_row.title:
+            file_row.title = title
+        if mime_type is not None and file_row.mime_type is None:
+            file_row.mime_type = mime_type
+        if taken_at is not None and file_row.taken_at is None:
+            file_row.taken_at = taken_at
+        file_row.updated_at = next_updated_at(file_row.updated_at)
+    else:
+        file_row = File(
+            file_id=new_uuid(),
+            content_hash=digest,
+            hash_algo=algo,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            title=title,
+            notes=None,
+            taken_at=taken_at,
+            created_at=now,
+            updated_at=now,
+            deleted_at=None,
+        )
+        session.add(file_row)
+        session.flush()
+
+    rel = (relative_path or "").strip()
+    if not rel:
+        name = _safe_ingest_name(title, digest)
+        device_part = source_device_id or "unknown"
+        rel = f"ingest/{kind}/{device_part}/{name}"
+
+    path_exists = session.scalars(
+        select(FilePath).where(
+            FilePath.file_id == file_row.file_id,
+            FilePath.root_id.is_(None),
+            FilePath.relative_path == rel,
+            FilePath.source_kind == kind,
+            FilePath.source_device_id == source_device_id,
+        )
+    ).first()
+    if path_exists is None:
+        session.add(
+            FilePath(
+                id=new_uuid(),
+                file_id=file_row.file_id,
+                root_id=None,
+                relative_path=rel,
+                source_kind=kind,
+                source_device_id=source_device_id,
+                is_current=1,
+                seen_at=now,
+                gone_at=None,
+            )
+        )
+
+    # Linux retention: pin the host device so GC will not drop the blob.
+    from homesync_server.services import availability as avail_svc
+
+    linux = ensure_local_device(session)
+    avail_svc.set_availability(
+        session, file_row.file_id, linux.device_id, mode="pinned"
+    )
+
+    session.flush()
+    return get_file(session, file_row.file_id)
 
 
 def list_tags(session: Session) -> list[Tag]:

@@ -159,6 +159,27 @@ class CatalogRepository {
         );
   }
 
+  /// Upsert a single catalog file row (e.g. after phone ingest).
+  Future<void> upsertFile(CatalogFile file) async {
+    await _db.transaction(() async {
+      await _db.into(_db.catalogFiles).insertOnConflictUpdate(
+            CatalogFilesCompanion.insert(
+              fileId: file.fileId,
+              contentHash: file.contentHash,
+              hashAlgo: file.hashAlgo,
+              mimeType: Value(file.mimeType),
+              sizeBytes: file.sizeBytes,
+              title: Value(file.title),
+              notes: Value(file.notes),
+              takenAt: Value(file.takenAt),
+              createdAt: file.createdAt,
+              updatedAt: file.updatedAt,
+              deletedAt: Value(file.deletedAt),
+            ),
+          );
+    });
+  }
+
   Future<CatalogFile?> getFile(String fileId) async {
     final row = await (_db.select(_db.catalogFiles)
           ..where((f) => f.fileId.equals(fileId)))

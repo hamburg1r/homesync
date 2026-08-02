@@ -50,6 +50,20 @@ class FilePatchIn(BaseModel):
     base_updated_at: str | None = None
 
 
+class FileCreateIn(BaseModel):
+    """Phone / client ingest after ``PUT /v1/blobs/{algo}/{hash}``."""
+
+    content_hash: str = Field(..., min_length=4)
+    hash_algo: str = Field(default="blake3", min_length=1)
+    size_bytes: int = Field(..., ge=0)
+    mime_type: str | None = None
+    title: str | None = None
+    taken_at: str | None = None
+    source_kind: str = Field(default="camera", min_length=1)
+    source_device_id: str | None = None
+    relative_path: str | None = None
+
+
 class FileTagsPutIn(BaseModel):
     tags: list[str]
 

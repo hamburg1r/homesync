@@ -191,5 +191,50 @@ class HomesyncApi {
     return response.bodyBytes;
   }
 
+  Future<void> putBlob({
+    required String algo,
+    required String hexHash,
+    required Uint8List bytes,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'PUT /v1/blobs/$algo/…',
+      _client
+          .put(
+            _uri('/v1/blobs/$algo/$hexHash'),
+            headers: {'Content-Type': 'application/octet-stream'},
+            body: bytes,
+          )
+          .timeout(const Duration(seconds: 120)),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw HomesyncApiException(
+        'blob upload failed',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  Future<CatalogFile> createFile(FileCreateRequest request) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'POST /v1/files',
+      _client.post(
+        _uri('/v1/files'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(request.toJson()),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'file create failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   void close() => _client.close();
 }

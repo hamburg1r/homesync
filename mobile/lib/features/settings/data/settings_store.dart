@@ -62,6 +62,13 @@ class SettingsStore {
     _log.info('settings', 'pin_budget_bytes set to $value');
   }
 
+  /// Low-level string prefs for durable queues (ingest, etc.).
+  String? readRaw(String key) => _prefs.getString(key);
+
+  Future<void> writeRaw(String key, String value) async {
+    await _prefs.setString(key, value);
+  }
+
   /// Returns an error message if [raw] is not a usable http(s) base URL.
   static String? validateBaseUrl(String raw) {
     final s = raw.trim();

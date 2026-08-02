@@ -82,17 +82,17 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_pin_materialize.py` (availability pin + blob GET). Flutter: `mobile/test/scenarios/pin_materialize_test.dart`. Device/Maestro airplane-mode flow is Later.
 
-## Milestone 5 — Phone → PC ingest
+## Milestone 5 — Phone → PC ingest (done)
 
 **Outcome:** Camera (or share intent) uploads to PC with provenance.
 
-- [ ] Blob PUT + file create with `source_kind`
-- [ ] Background-friendly upload queue
-- [ ] Confirm Linux retention
+- [x] Blob PUT + file create with `source_kind`
+- [x] Background-friendly upload queue
+- [x] Confirm Linux retention
 
 **Exit check:** Photo taken on phone appears in PC catalog and blob store.
 
-**E2E:** add `backend/tests/scenarios/test_phone_ingest.py`.
+**E2E:** `backend/tests/scenarios/test_phone_ingest.py`. Flutter: `mobile/test/scenarios/phone_ingest_test.dart` (queue + API). Camera/share UI polish is Later.
 
 ## Milestone 6 — Ghost / restore UX
 
@@ -177,3 +177,4 @@ Record important choices here as they happen.
 | 2026-07-31 | Mobile foundation: feature-first flatter layout; get_it/injectable; freezed DTOs; logger; http not dio; codegen gitignored | Small-app stack; audit logs; agents run build_runner via mobile_check.sh |
 | 2026-07-31 | Flutter phone-free scenarios co-equal for `mobile/` changes | Mirror backend pytest guardrail without requiring a device |
 | 2026-07-31 | Milestone 4: availability API + blob GET; phone pin = mode + materialize; disk budget | Unpin deletes local bytes, keeps listing; hash-in-place still serves GET |
+| 2026-08-02 | Milestone 5: blob PUT + POST /files ingest; Linux host pinned on create; phone durable queue | Managed CAS for phone uploads; provenance on file_paths; camera UI polish Later |

@@ -6,8 +6,10 @@ Availability and blob helpers live in sibling modules
 
 from homesync_server.services.catalog import (
     CatalogConflictError,
+    IngestValidationError,
     NotFoundError,
     catalog_delta,
+    create_file,
     file_to_out,
     get_file,
     list_files,
@@ -20,8 +22,10 @@ from homesync_server.services.catalog import (
 
 __all__ = [
     "CatalogConflictError",
+    "IngestValidationError",
     "NotFoundError",
     "catalog_delta",
+    "create_file",
     "file_to_out",
     "get_file",
     "list_files",

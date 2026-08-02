@@ -86,7 +86,7 @@ Pinned files must appear in availability with `pinned` and trigger blob fetch.
 
 ## Blob transfer
 
-Implemented (Milestone 4 GET; PUT is Milestone 5):
+Implemented (Milestone 4 GET + Milestone 5 PUT):
 
 ```http
 GET /v1/blobs/{algo}/{hash}
@@ -98,6 +98,8 @@ Rules:
 - `GET` resolves managed `blobs/<algo>/<hh>/<hh>/<hash>` first, then a current hash-in-place library path.
 - Unknown / missing on disk → `404` (catalog may still list file as degraded).
 - Hash mismatch on upload → `400`.
+- Identical existing blob → `200` dedup (`X-Blob-Created: 0`); new object → `201`.
+- Size/byte mismatch against an existing object → `409` (never overwrite).
 - Response includes `Content-Length`, `ETag`, `X-Content-Hash`, `X-Hash-Algo`. Prefer HTTP range requests when implementing resume.
 
 Pin flow is **two steps**:
@@ -147,6 +149,26 @@ Server should allow a device to update **its own** availability primarily. Cross
 
 ## Phone ingest (camera / exports)
 
+Implemented (Milestone 5):
+
+```http
+PUT /v1/blobs/{algo}/{hash}
+POST /v1/files
+{
+  "content_hash": "…",
+  "hash_algo": "blake3",
+  "size_bytes": 1234,
+  "mime_type": "image/jpeg",
+  "title": "IMG_001.jpg",
+  "taken_at": null,
+  "source_kind": "camera",
+  "source_device_id": "…",
+  "relative_path": null
+}
+PUT /v1/files/{file_id}/availability/{phone_device_id}
+{ "mode": "pinned" }
+```
+
 ```mermaid
 sequenceDiagram
   participant Phone
@@ -159,9 +181,16 @@ sequenceDiagram
   Phone->>API: POST /v1/files
   Note over Phone,API: includes provenance source_kind=camera, source_device_id=phone
   API->>DB: create file_id or dedup by hash
+  API->>DB: pin linux-host availability (retention)
   API-->>Phone: file metadata
-  Phone->>API: PUT availability pinned for phone + ensure linux retains
+  Phone->>API: PUT availability pinned for phone
 ```
+
+- `POST /v1/files` requires the managed blob to exist first (`400` otherwise).
+- Dedup by `(hash_algo, content_hash)` returns the existing `file_id` and attaches provenance when needed.
+- Standalone ingest uses `file_paths.root_id = NULL` and a synthetic `relative_path` under `ingest/<source_kind>/…`.
+- Linux retention: create pins the host `linux` device to `pinned` so the managed blob is kept.
+- Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync).
 
 ## WhatsApp-style restore (canonical story)
 

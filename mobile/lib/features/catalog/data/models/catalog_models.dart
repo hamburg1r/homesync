@@ -145,3 +145,22 @@ abstract class AvailabilityInfo with _$AvailabilityInfo {
   factory AvailabilityInfo.fromJson(Map<String, dynamic> json) =>
       _$AvailabilityInfoFromJson(json);
 }
+
+/// Body for ``POST /v1/files`` after a blob PUT.
+@freezed
+abstract class FileCreateRequest with _$FileCreateRequest {
+  const factory FileCreateRequest({
+    @JsonKey(name: 'content_hash') required String contentHash,
+    @JsonKey(name: 'hash_algo') @Default('blake3') String hashAlgo,
+    @JsonKey(name: 'size_bytes') required int sizeBytes,
+    @JsonKey(name: 'mime_type') String? mimeType,
+    String? title,
+    @JsonKey(name: 'taken_at') String? takenAt,
+    @JsonKey(name: 'source_kind') @Default('camera') String sourceKind,
+    @JsonKey(name: 'source_device_id') String? sourceDeviceId,
+    @JsonKey(name: 'relative_path') String? relativePath,
+  }) = _FileCreateRequest;
+
+  factory FileCreateRequest.fromJson(Map<String, dynamic> json) =>
+      _$FileCreateRequestFromJson(json);
+}

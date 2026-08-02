@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from homesync_server.api.deps import get_session
+from homesync_server.config import data_root
 from homesync_server.schemas.catalog import (
     AvailabilityOut,
     AvailabilityPutIn,
+    FileCreateIn,
     FileOut,
     FilePatchIn,
     FileTagsPutIn,
@@ -22,6 +24,40 @@ from homesync_server.services import catalog as catalog_svc
 router = APIRouter(prefix="/v1", tags=["catalog"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
+
+
+@router.post("/files", response_model=FileOut)
+def create_file(
+    body: FileCreateIn,
+    session: SessionDep,
+    request: Request,
+) -> FileOut:
+    """Ingest a catalog row after ``PUT /v1/blobs`` (dedup by content hash)."""
+    _ = request
+    try:
+        row = catalog_svc.create_file(
+            session,
+            data_root(),
+            content_hash=body.content_hash,
+            hash_algo=body.hash_algo,
+            size_bytes=body.size_bytes,
+            mime_type=body.mime_type,
+            title=body.title,
+            taken_at=body.taken_at,
+            source_kind=body.source_kind,
+            source_device_id=body.source_device_id,
+            relative_path=body.relative_path,
+        )
+    except catalog_svc.NotFoundError as exc:
+        detail = (
+            "device not found"
+            if str(exc).startswith("device:")
+            else "file not found"
+        )
+        raise HTTPException(status_code=404, detail=detail) from exc
+    except catalog_svc.IngestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return catalog_svc.file_to_out(row)
 
 
 @router.get("/files", response_model=list[FileOut])

@@ -8,6 +8,8 @@ import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repositor
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:http/http.dart' as http;
@@ -85,6 +87,8 @@ class TestCatalogHarness {
     required this.sync,
     required this.blobs,
     required this.pinService,
+    required this.ingestQueue,
+    required this.ingestService,
     required this.blobRoot,
   });
 
@@ -96,6 +100,8 @@ class TestCatalogHarness {
   final CatalogSync sync;
   final LocalBlobStore blobs;
   final PinService pinService;
+  final IngestQueue ingestQueue;
+  final IngestService ingestService;
   final Directory blobRoot;
 
   static Future<TestCatalogHarness> open(
@@ -114,11 +120,21 @@ class TestCatalogHarness {
     final identity = DeviceIdentity(settings, log);
     final repository = CatalogRepository(database, log, blobs, identity);
     final api = HomesyncApi.withClient(settings, log, client);
+    final ingestQueue = IngestQueue(settings, log);
+    final ingestService = IngestService(
+      api: api,
+      repository: repository,
+      blobs: blobs,
+      identity: identity,
+      queue: ingestQueue,
+      log: log,
+    );
     final sync = CatalogSync(
       api: api,
       repository: repository,
       identity: identity,
       settings: settings,
+      ingest: ingestService,
       log: log,
     );
     final pinService = PinService(
@@ -138,6 +154,8 @@ class TestCatalogHarness {
       sync: sync,
       blobs: blobs,
       pinService: pinService,
+      ingestQueue: ingestQueue,
+      ingestService: ingestService,
       blobRoot: root,
     );
   }
