@@ -67,6 +67,7 @@ def file_to_out(file_row: File, tag_names: list[str] | None = None) -> FileOut:
     names = tag_names
     if names is None:
         names = sorted(ft.tag.name for ft in file_row.file_tags if ft.tag is not None)
+    mime = (file_row.mime_type or "").strip().lower()
     return FileOut(
         file_id=file_row.file_id,
         content_hash=file_row.content_hash,
@@ -80,6 +81,7 @@ def file_to_out(file_row: File, tag_names: list[str] | None = None) -> FileOut:
         updated_at=file_row.updated_at,
         deleted_at=file_row.deleted_at,
         tags=names,
+        has_thumb=mime.startswith("image/"),
     )
 
 
@@ -118,7 +120,12 @@ def list_files(
     include_deleted: bool = False,
     limit: int = 100,
     offset: int = 0,
+    q: str | None = None,
 ) -> list[File]:
+    """List files, optionally filtered by basic search ``q`` (title/notes/tags).
+
+    Matching is case-insensitive substring (SQLite ``LIKE``). FTS is Later.
+    """
     stmt = (
         select(File)
         .options(selectinload(File.file_tags).selectinload(FileTag.tag))
@@ -128,7 +135,20 @@ def list_files(
     )
     if not include_deleted:
         stmt = stmt.where(File.deleted_at.is_(None))
-    return list(session.scalars(stmt).all())
+    needle = (q or "").strip()
+    if needle:
+        pattern = f"%{needle.lower()}%"
+        tag_ids = select(FileTag.file_id).join(Tag).where(
+            func.lower(Tag.name).like(pattern)
+        )
+        stmt = stmt.where(
+            or_(
+                func.lower(File.title).like(pattern),
+                func.lower(File.notes).like(pattern),
+                File.file_id.in_(tag_ids),
+            )
+        )
+    return list(session.scalars(stmt).unique().all())
 
 
 def patch_file(

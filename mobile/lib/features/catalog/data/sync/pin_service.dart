@@ -38,6 +38,9 @@ class PinService {
   final SettingsStore settings;
   final AppLog log;
 
+  /// Bring to phone = pin availability + materialize blob (ghost restore).
+  Future<CatalogFile> bringToPhone(String fileId) => pin(fileId);
+
   /// Pin a file: set server+local availability to pinned, download bytes.
   Future<CatalogFile> pin(String fileId) async {
     final file = await repository.getFile(fileId);

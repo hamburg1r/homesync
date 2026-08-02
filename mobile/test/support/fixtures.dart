@@ -5,12 +5,14 @@ import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
 import 'package:homesync_mobile/features/catalog/data/local_blob_store.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_database.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
+import 'package:homesync_mobile/features/catalog/data/local_thumb_store.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -38,6 +40,8 @@ String catalogFileJson({
   List<String> tags = const [],
   String? contentHash,
   int sizeBytes = 12,
+  String mimeType = 'text/plain',
+  bool hasThumb = false,
 }) {
   final tagJson = tags.map((t) => '"$t"').join(',');
   final hash = contentHash ?? 'hash-$id-pad-to-make-length-ok-abcdefghijklmnop';
@@ -46,7 +50,7 @@ String catalogFileJson({
   "file_id": "$id",
   "content_hash": "$hash",
   "hash_algo": "blake3",
-  "mime_type": "text/plain",
+  "mime_type": "$mimeType",
   "size_bytes": $sizeBytes,
   "title": "$title",
   "notes": null,
@@ -54,7 +58,31 @@ String catalogFileJson({
   "created_at": "2026-07-31T00:00:00Z",
   "updated_at": "$updatedAt",
   "deleted_at": ${deletedAt == null ? 'null' : '"$deletedAt"'},
-  "tags": [$tagJson]
+  "tags": [$tagJson],
+  "has_thumb": $hasThumb
+}
+''';
+}
+
+String catalogPathJson({
+  required String id,
+  required String fileId,
+  String sourceKind = 'whatsapp',
+  String relativePath = 'ingest/whatsapp/photo.jpg',
+  String? sourceDeviceId = 'd1',
+  bool isCurrent = true,
+}) {
+  return '''
+{
+  "id": "$id",
+  "file_id": "$fileId",
+  "root_id": null,
+  "relative_path": "$relativePath",
+  "source_kind": "$sourceKind",
+  "source_device_id": ${sourceDeviceId == null ? 'null' : '"$sourceDeviceId"'},
+  "is_current": $isCurrent,
+  "seen_at": "2026-07-31T00:00:00Z",
+  "gone_at": null
 }
 ''';
 }
@@ -88,12 +116,15 @@ class TestCatalogHarness {
     required this.api,
     required this.sync,
     required this.blobs,
+    required this.thumbs,
     required this.pinService,
+    required this.thumbService,
     required this.ingestQueue,
     required this.ingestService,
     required this.tracking,
     required this.scanner,
     required this.blobRoot,
+    required this.thumbRoot,
     required this.scanRoot,
   });
 
@@ -104,17 +135,21 @@ class TestCatalogHarness {
   final HomesyncApi api;
   final CatalogSync sync;
   final LocalBlobStore blobs;
+  final LocalThumbStore thumbs;
   final PinService pinService;
+  final ThumbService thumbService;
   final IngestQueue ingestQueue;
   final IngestService ingestService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
   final Directory blobRoot;
+  final Directory thumbRoot;
   final Directory scanRoot;
 
   static Future<TestCatalogHarness> open(
     MockClient client, {
     Directory? blobRoot,
+    Directory? thumbRoot,
     Directory? scanRoot,
   }) async {
     SharedPreferences.setMockInitialValues({});
@@ -124,9 +159,12 @@ class TestCatalogHarness {
     final database = CatalogDatabase.memory();
     final root = blobRoot ??
         Directory.systemTemp.createTempSync('homesync_pins_test_');
+    final tRoot = thumbRoot ??
+        Directory.systemTemp.createTempSync('homesync_thumbs_test_');
     final scan = scanRoot ??
         Directory.systemTemp.createTempSync('homesync_scan_test_');
     final blobs = LocalBlobStore.forRoot(log, root);
+    final thumbs = LocalThumbStore.forRoot(log, tRoot);
     final identity = DeviceIdentity(settings, log);
     final repository = CatalogRepository(database, log, blobs, identity);
     final api = HomesyncApi.withClient(settings, log, client);
@@ -155,6 +193,7 @@ class TestCatalogHarness {
       settings: settings,
       log: log,
     );
+    final thumbService = ThumbService(api: api, thumbs: thumbs, log: log);
     final tracking = TrackingRepository(database, log);
     final scanner = DeviceScanner(
       repository: tracking,
@@ -170,12 +209,15 @@ class TestCatalogHarness {
       api: api,
       sync: sync,
       blobs: blobs,
+      thumbs: thumbs,
       pinService: pinService,
+      thumbService: thumbService,
       ingestQueue: ingestQueue,
       ingestService: ingestService,
       tracking: tracking,
       scanner: scanner,
       blobRoot: root,
+      thumbRoot: tRoot,
       scanRoot: scan,
     );
   }
@@ -184,6 +226,9 @@ class TestCatalogHarness {
     await repository.close();
     if (await blobRoot.exists()) {
       await blobRoot.delete(recursive: true);
+    }
+    if (await thumbRoot.exists()) {
+      await thumbRoot.delete(recursive: true);
     }
     if (await scanRoot.exists()) {
       await scanRoot.delete(recursive: true);

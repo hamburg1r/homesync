@@ -66,7 +66,7 @@ Response shape:
 ```json
 {
   "next_cursor": "v1:2026-07-30T12:00:00.000001Z|…",
-  "files": [ { "file_id": "…", "content_hash": "…", "title": "…", "updated_at": "…", "deleted_at": null, "tags": ["family"] } ],
+  "files": [ { "file_id": "…", "content_hash": "…", "title": "…", "updated_at": "…", "deleted_at": null, "tags": ["family"], "has_thumb": false } ],
   "tags": [ { "tag_id": "…", "name": "family", "color": null } ],
   "file_tags": [ { "file_id": "…", "tag_id": "…" } ],
   "availability": [],
@@ -115,6 +115,7 @@ Implemented (Milestone 2):
 
 ```http
 GET /v1/files
+GET /v1/files?q=<substring>   # Milestone 7: title / notes / tag name (case-insensitive)
 GET /v1/files/{file_id}
 PATCH /v1/files/{file_id}
 {
@@ -129,9 +130,26 @@ PUT /v1/files/{file_id}/tags
 { "tags": ["family", "receipts"] }
 ```
 
+**Search (v1):** `q` is a basic substring match on `title`, `notes`, and tag names (SQLite `LIKE`, case-insensitive). FTS is Later. Soft-deleted rows are excluded unless `include_deleted=true`.
+
 **LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
 
 Manual curl smoke: `scripts/metadata_api_smoke.sh` (daemon on `127.0.0.1:8787`, catalog already indexed).
+
+## Thumbnails (listed-mode previews)
+
+Implemented (Milestone 7):
+
+```http
+GET /v1/thumbs/{file_id}
+```
+
+- Returns a small JPEG (`Content-Type: image/jpeg`), generated on demand from the full blob (managed store or hash-in-place).
+- Cached under `$data_root/thumbs/<hh>/<hh>/<content_hash>.jpg` (content-addressed; max edge 256px).
+- Catalog `files[].has_thumb` is a client hint (`true` when `mime_type` starts with `image/`). Phone may `GET` the thumb without materializing full bytes (listed mode).
+- Missing file / missing source blob → `404`. Non-image / undecodable → `415`.
+
+Phone: cache thumbs locally by content hash; search filters the local Drift catalog by title/notes/tags (server `?q=` remains available for API clients).
 
 ## Availability updates
 
@@ -195,6 +213,8 @@ sequenceDiagram
 
 ## WhatsApp-style restore (canonical story)
 
+Implemented (Milestone 6):
+
 Preconditions:
 
 - File was ingested to Linux (backup/export/indexer).
@@ -211,6 +231,12 @@ flowchart TD
   F -->|yes| G[Write local pinned file]
   F -->|no| H[Show degraded: missing on PC]
 ```
+
+- Catalog delta includes `paths[]` with `source_kind` / `source_device_id`.
+- Phone mirrors paths locally and surfaces provenance (`from WhatsApp · on PC only` when listed without bytes).
+- **Bring to phone** = same as pin (availability `pinned` + blob GET).
+- Unpin deletes local bytes but keeps the catalog listing (ghost again).
+- Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the active listing and deletes any local materialised bytes. Blob GC on Linux remains deferred.
 
 Provenance rows explain *why* it still exists (“imported from WhatsApp backup on nixos”).
 

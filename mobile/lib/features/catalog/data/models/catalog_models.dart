@@ -43,6 +43,8 @@ abstract class CatalogFile with _$CatalogFile {
     @JsonKey(name: 'updated_at') required String updatedAt,
     @JsonKey(name: 'deleted_at') String? deletedAt,
     @Default([]) List<String> tags,
+    /// Server hint: ``GET /v1/thumbs/{file_id}`` may return a small JPEG.
+    @JsonKey(name: 'has_thumb') @Default(false) bool hasThumb,
     /// Local join — not part of server file JSON.
     @JsonKey(includeFromJson: false, includeToJson: false)
     @Default(AvailabilityMode.listed)
@@ -51,6 +53,8 @@ abstract class CatalogFile with _$CatalogFile {
     @JsonKey(includeFromJson: false, includeToJson: false)
     @Default(false)
     bool hasLocalBytes,
+    /// Best-effort provenance from mirrored `file_paths` (local join).
+    @JsonKey(includeFromJson: false, includeToJson: false) String? primarySourceKind,
   }) = _CatalogFile;
 
   factory CatalogFile.fromJson(Map<String, dynamic> json) =>
@@ -60,12 +64,51 @@ abstract class CatalogFile with _$CatalogFile {
 
   bool get isPinned => availabilityMode == AvailabilityMode.pinned;
 
+  /// Listed metadata without local bytes — classic ghost / restore candidate.
+  bool get isGhost => !isDeleted && !hasLocalBytes;
+
+  /// Whether listed-mode thumb fetch is worth attempting.
+  bool get canShowThumb =>
+      hasThumb || (mimeType?.toLowerCase().startsWith('image/') ?? false);
+
   /// UI label — not the phone filesystem name (pins use content-hash paths).
   String get displayName {
     if (title != null && title!.trim().isNotEmpty) {
       return title!.trim();
     }
     return fileId;
+  }
+
+  /// e.g. `from WhatsApp · on PC only` for ghost restore UX.
+  String? get provenanceSubtitle {
+    final from = sourceKindLabel(primarySourceKind);
+    final parts = <String>[];
+    if (from != null) parts.add(from);
+    if (isGhost) {
+      parts.add('on PC only');
+    } else if (hasLocalBytes) {
+      parts.add('on device');
+    }
+    if (parts.isEmpty) return null;
+    return parts.join(' · ');
+  }
+}
+
+/// Human label for `file_paths.source_kind` (null = hide in UI).
+String? sourceKindLabel(String? kind) {
+  switch ((kind ?? '').trim().toLowerCase()) {
+    case 'whatsapp':
+      return 'from WhatsApp';
+    case 'camera':
+      return 'from Camera';
+    case 'download':
+      return 'from Downloads';
+    case 'misc':
+      return 'from misc';
+    case 'manual':
+      return 'from manual import';
+    default:
+      return null;
   }
 }
 
@@ -105,6 +148,25 @@ abstract class CatalogAvailability with _$CatalogAvailability {
       _$CatalogAvailabilityFromJson(json);
 }
 
+/// Mirrored server `file_paths` row (provenance + path history).
+@freezed
+abstract class CatalogFilePath with _$CatalogFilePath {
+  const factory CatalogFilePath({
+    required String id,
+    @JsonKey(name: 'file_id') required String fileId,
+    @JsonKey(name: 'root_id') String? rootId,
+    @JsonKey(name: 'relative_path') required String relativePath,
+    @JsonKey(name: 'source_kind') required String sourceKind,
+    @JsonKey(name: 'source_device_id') String? sourceDeviceId,
+    @JsonKey(name: 'is_current') @Default(true) bool isCurrent,
+    @JsonKey(name: 'seen_at') required String seenAt,
+    @JsonKey(name: 'gone_at') String? goneAt,
+  }) = _CatalogFilePath;
+
+  factory CatalogFilePath.fromJson(Map<String, dynamic> json) =>
+      _$CatalogFilePathFromJson(json);
+}
+
 @freezed
 abstract class CatalogDelta with _$CatalogDelta {
   const factory CatalogDelta({
@@ -112,6 +174,7 @@ abstract class CatalogDelta with _$CatalogDelta {
     @Default([]) List<CatalogFile> files,
     @Default([]) List<CatalogTag> tags,
     @JsonKey(name: 'file_tags') @Default([]) List<CatalogFileTag> fileTags,
+    @Default([]) List<CatalogFilePath> paths,
     @Default([]) List<CatalogAvailability> availability,
   }) = _CatalogDelta;
 

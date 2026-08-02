@@ -50,6 +50,23 @@ class CatalogAvailability extends Table {
   Set<Column<Object>> get primaryKey => {fileId, deviceId};
 }
 
+/// Mirrored `file_paths` (provenance for ghost / restore UX).
+@DataClassName('CatalogPathRow')
+class CatalogPaths extends Table {
+  TextColumn get id => text()();
+  TextColumn get fileId => text()();
+  TextColumn get rootId => text().nullable()();
+  TextColumn get relativePath => text()();
+  TextColumn get sourceKind => text()();
+  TextColumn get sourceDeviceId => text().nullable()();
+  BoolColumn get isCurrent => boolean().withDefault(const Constant(true))();
+  TextColumn get seenAt => text()();
+  TextColumn get goneAt => text().nullable()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 @DataClassName('SyncMetaRow')
 class SyncMetaEntries extends Table {
   TextColumn get key => text()();

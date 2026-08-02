@@ -136,6 +136,8 @@ Logical file row (current head metadata).
 
 Optional JSON column `exif_json` is acceptable early; normalize later if needed.
 
+API responses may include computed `has_thumb` (not a DB column): `true` when `mime_type` starts with `image/`, meaning `GET /v1/thumbs/{file_id}` may return a JPEG. Derived thumbs live on disk at `thumbs/<hh>/<hh>/<content_hash>.jpg` (see `docs/architecture.md` / storage layout).
+
 ### `file_paths` (provenance + human path history)
 
 | Column | Type | Notes |

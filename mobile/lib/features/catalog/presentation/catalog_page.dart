@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/app/injection.dart';
@@ -43,6 +45,7 @@ class CatalogPage extends StatelessWidget {
           groupTitle: state.groupTitle,
           deviceAndSyncedOnly: state.deviceAndSyncedOnly,
           rules: state.rules,
+          searchQuery: state.searchQuery,
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
           onPin: (file) => context.read<CatalogCubit>().pinFile(file.fileId),
@@ -53,6 +56,10 @@ class CatalogPage extends StatelessWidget {
               .setBrowseMode(mode, groupRuleId: ruleId, groupTitle: title),
           onToggleDeviceSynced: (v) =>
               context.read<CatalogCubit>().setDeviceAndSyncedOnly(v),
+          onSearchChanged: (q) =>
+              context.read<CatalogCubit>().setSearchQuery(q),
+          onLoadThumb: (file) =>
+              context.read<CatalogCubit>().thumbService.ensureThumb(file),
         );
       },
     );
@@ -68,7 +75,7 @@ class CatalogPage extends StatelessWidget {
           title: Text(file.displayName),
           content: const Text(
             'This file is listed only — no bytes on this device. '
-            'Pin it to download from the PC.',
+            'Bring to phone to download from the PC.',
           ),
           actions: [
             TextButton(
@@ -118,6 +125,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.groupTitle,
     this.deviceAndSyncedOnly = false,
     this.rules = const [],
+    this.searchQuery = '',
     this.onRefresh,
     this.onOpenSettings,
     this.onPin,
@@ -125,6 +133,8 @@ class CatalogBrowseView extends StatelessWidget {
     this.onOpen,
     this.onSelectBrowse,
     this.onToggleDeviceSynced,
+    this.onSearchChanged,
+    this.onLoadThumb,
   });
 
   final CatalogViewState state;
@@ -136,6 +146,7 @@ class CatalogBrowseView extends StatelessWidget {
   final String? groupTitle;
   final bool deviceAndSyncedOnly;
   final List<TrackingRule> rules;
+  final String searchQuery;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
   final Future<String?> Function(CatalogFile file)? onPin;
@@ -147,6 +158,8 @@ class CatalogBrowseView extends StatelessWidget {
     String? title,
   })? onSelectBrowse;
   final ValueChanged<bool>? onToggleDeviceSynced;
+  final ValueChanged<String>? onSearchChanged;
+  final Future<File?> Function(CatalogFile file)? onLoadThumb;
 
   String get _title {
     switch (browseMode) {
@@ -282,6 +295,14 @@ class CatalogBrowseView extends StatelessWidget {
       ),
       body: Column(
         children: [
+          if (onSearchChanged != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: _CatalogSearchField(
+                query: searchQuery,
+                onChanged: onSearchChanged!,
+              ),
+            ),
           if (state == CatalogViewState.degraded && statusMessage != null)
             MaterialBanner(
               content: Text(
@@ -353,11 +374,80 @@ class CatalogBrowseView extends StatelessWidget {
                 onPin: onPin,
                 onUnpin: onUnpin,
                 onOpen: onOpen,
+                onLoadThumb: onLoadThumb,
               );
             },
           ),
         );
     }
+  }
+}
+
+class _CatalogSearchField extends StatefulWidget {
+  const _CatalogSearchField({
+    required this.query,
+    required this.onChanged,
+  });
+
+  final String query;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_CatalogSearchField> createState() => _CatalogSearchFieldState();
+}
+
+class _CatalogSearchFieldState extends State<_CatalogSearchField> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.query);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CatalogSearchField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.query != _controller.text) {
+      _controller.text = widget.query;
+      _controller.selection = TextSelection.collapsed(
+        offset: widget.query.length,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _controller,
+      decoration: InputDecoration(
+        hintText: 'Search title or tags',
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: _controller.text.isEmpty
+            ? null
+            : IconButton(
+                tooltip: 'Clear',
+                onPressed: () {
+                  _controller.clear();
+                  widget.onChanged('');
+                  setState(() {});
+                },
+                icon: const Icon(Icons.clear),
+              ),
+        border: const OutlineInputBorder(),
+        isDense: true,
+      ),
+      onChanged: (value) {
+        widget.onChanged(value);
+        setState(() {});
+      },
+    );
   }
 }
 
@@ -368,6 +458,7 @@ class _FileTile extends StatelessWidget {
     this.onPin,
     this.onUnpin,
     this.onOpen,
+    this.onLoadThumb,
   });
 
   final CatalogFile file;
@@ -375,6 +466,7 @@ class _FileTile extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<void> Function(CatalogFile file)? onOpen;
+  final Future<File?> Function(CatalogFile file)? onLoadThumb;
 
   @override
   Widget build(BuildContext context) {
@@ -386,20 +478,27 @@ class _FileTile extends StatelessWidget {
     final chipColor = file.isPinned
         ? theme.colorScheme.primaryContainer
         : theme.colorScheme.surfaceContainerHighest;
+    final provenance = file.provenanceSubtitle;
+    final subtitle = provenance == null
+        ? '$typeLabel · $sizeLabel · $tags'
+        : '$provenance\n$typeLabel · $sizeLabel · $tags';
 
     return ListTile(
       leading: busy
           ? const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
+              width: 40,
+              height: 40,
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
             )
-          : Icon(
-              _iconForMime(file.mimeType),
-              color: theme.colorScheme.primary,
-            ),
+          : _ThumbOrIcon(file: file, onLoadThumb: onLoadThumb),
       title: Text(file.displayName),
-      subtitle: Text('$typeLabel · $sizeLabel · $tags'),
+      subtitle: Text(subtitle),
       isThreeLine: true,
       trailing: Chip(
         label: Text(modeLabel),
@@ -423,6 +522,44 @@ class _FileTile extends StatelessWidget {
   }
 }
 
+class _ThumbOrIcon extends StatelessWidget {
+  const _ThumbOrIcon({required this.file, this.onLoadThumb});
+
+  final CatalogFile file;
+  final Future<File?> Function(CatalogFile file)? onLoadThumb;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final fallback = Icon(
+      _iconForMime(file.mimeType),
+      color: theme.colorScheme.primary,
+    );
+    if (!file.canShowThumb || onLoadThumb == null) {
+      return SizedBox(width: 40, height: 40, child: Center(child: fallback));
+    }
+    return FutureBuilder<File?>(
+      future: onLoadThumb!(file),
+      builder: (context, snapshot) {
+        final path = snapshot.data;
+        if (path != null) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: Image.file(
+              path,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => fallback,
+            ),
+          );
+        }
+        return SizedBox(width: 40, height: 40, child: Center(child: fallback));
+      },
+    );
+  }
+}
+
 class _FileDetailSheet extends StatelessWidget {
   const _FileDetailSheet({
     required this.file,
@@ -440,6 +577,7 @@ class _FileDetailSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bringLabel = file.isGhost ? 'Bring to phone' : 'Pin';
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
       child: Column(
@@ -448,6 +586,13 @@ class _FileDetailSheet extends StatelessWidget {
         children: [
           Text(file.displayName, style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),
+          if (file.provenanceSubtitle != null)
+            Text(
+              file.provenanceSubtitle!,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+            ),
           Text('Availability: ${file.availabilityMode.wire}'
               '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'),
           Text('Type: ${file.mimeType ?? "unknown"}'),
@@ -489,8 +634,12 @@ class _FileDetailSheet extends StatelessWidget {
                             }
                           }
                         },
-                  icon: const Icon(Icons.push_pin_outlined),
-                  label: const Text('Pin'),
+                  icon: Icon(
+                    file.isGhost
+                        ? Icons.download_outlined
+                        : Icons.push_pin_outlined,
+                  ),
+                  label: Text(bringLabel),
                 ),
               if (file.isPinned && onUnpin != null)
                 OutlinedButton.icon(

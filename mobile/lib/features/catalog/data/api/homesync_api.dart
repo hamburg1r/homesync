@@ -191,6 +191,49 @@ class HomesyncApi {
     return response.bodyBytes;
   }
 
+  Future<Uint8List> getThumb({required String fileId}) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'GET /v1/thumbs/…',
+      _client.get(_uri('/v1/thumbs/$fileId')),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('thumb not found', statusCode: 404);
+    }
+    if (response.statusCode == 415) {
+      throw HomesyncApiException('thumb unsupported', statusCode: 415);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'thumb download failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return response.bodyBytes;
+  }
+
+  Future<List<CatalogFile>> searchFiles({
+    required String q,
+    int limit = 100,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final query = <String, String>{'limit': '$limit', 'q': q};
+    final response = await _send(
+      'GET /v1/files?q=…',
+      _client.get(_uri('/v1/files', query)),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'file search failed',
+        statusCode: response.statusCode,
+      );
+    }
+    final list = jsonDecode(response.body) as List<dynamic>;
+    return list
+        .map((e) => CatalogFile.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<void> putBlob({
     required String algo,
     required String hexHash,

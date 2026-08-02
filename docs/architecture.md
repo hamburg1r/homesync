@@ -58,8 +58,9 @@ Responsibilities:
 - Serve **metadata APIs** and **blob download/upload**.
 - **Index** configured library roots (Photos, Documents, WhatsApp backup dirs, …).
 - Record **provenance** on ingest.
-- Generate thumbnails (later) so listed-mode phone UI can show previews without full files.
+- Generate thumbnails so listed-mode phone UI can show previews without full files (`GET /v1/thumbs/{file_id}`).
 - Apply **pin/list/cache** policy updates from devices.
+- Serve basic catalog search (`GET /v1/files?q=` on title/notes/tags).
 
 ### Flutter app (`mobile/`)
 

@@ -39,6 +39,14 @@ def blob_path(data_root: Path, algo: str, hex_hash: str) -> Path:
     return data_root / "blobs" / algo / hex_hash[0:2] / hex_hash[2:4] / hex_hash
 
 
+def thumb_path(data_root: Path, hex_hash: str) -> Path:
+    """Derived JPEG thumb path: ``thumbs/<hh>/<hh>/<fullhash>.jpg``."""
+    digest = hex_hash.strip().lower()
+    if len(digest) < 4:
+        raise ValueError("content hash too short for fan-out")
+    return data_root / "thumbs" / digest[0:2] / digest[2:4] / f"{digest}.jpg"
+
+
 def write_blob_atomic(dest: Path, data: bytes) -> None:
     """Write bytes via ``.tmp`` + ``rename`` into ``dest`` (parent dirs created)."""
     dest.parent.mkdir(parents=True, exist_ok=True)

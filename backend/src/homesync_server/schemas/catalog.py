@@ -41,6 +41,8 @@ class FileOut(BaseModel):
     updated_at: str
     deleted_at: str | None
     tags: list[str] = Field(default_factory=list)
+    # Client hint: GET /v1/thumbs/{file_id} may return a small JPEG (listed mode).
+    has_thumb: bool = False
 
 
 class FilePatchIn(BaseModel):

@@ -12,6 +12,7 @@ dependencies = [
   "python-multipart>=0.0.12",
   "httpx>=0.28",
   "blake3>=1.0.9",
+  "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]

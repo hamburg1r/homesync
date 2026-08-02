@@ -9,6 +9,7 @@ import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repositor
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -29,6 +30,7 @@ final class CatalogState extends Equatable {
     this.groupTitle,
     this.deviceAndSyncedOnly = false,
     this.rules = const [],
+    this.searchQuery = '',
   });
 
   final CatalogViewState viewState;
@@ -41,6 +43,7 @@ final class CatalogState extends Equatable {
   final String? groupTitle;
   final bool deviceAndSyncedOnly;
   final List<TrackingRule> rules;
+  final String searchQuery;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -56,6 +59,7 @@ final class CatalogState extends Equatable {
     String? groupTitle,
     bool? deviceAndSyncedOnly,
     List<TrackingRule>? rules,
+    String? searchQuery,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -69,6 +73,7 @@ final class CatalogState extends Equatable {
       groupTitle: clearGroup ? null : (groupTitle ?? this.groupTitle),
       deviceAndSyncedOnly: deviceAndSyncedOnly ?? this.deviceAndSyncedOnly,
       rules: rules ?? this.rules,
+      searchQuery: searchQuery ?? this.searchQuery,
     );
   }
 
@@ -84,6 +89,7 @@ final class CatalogState extends Equatable {
         groupTitle,
         deviceAndSyncedOnly,
         rules,
+        searchQuery,
       ];
 }
 
@@ -94,6 +100,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.repository,
     required this.sync,
     required this.pinService,
+    required this.thumbService,
     required this.tracking,
     required this.scanner,
     required this.log,
@@ -107,6 +114,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   final CatalogRepository repository;
   final CatalogSync sync;
   final PinService pinService;
+  final ThumbService thumbService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
   final AppLog log;
@@ -135,7 +143,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   }
 
   void _emitFilteredCatalog(List<CatalogFile> files) {
-    final filtered = _applyDeviceSyncedFilter(files);
+    final filtered = _applySearch(_applyDeviceSyncedFilter(files));
     if (state.refreshing) {
       emit(state.copyWith(files: filtered));
       return;
@@ -158,6 +166,22 @@ class CatalogCubit extends Cubit<CatalogState> {
   List<CatalogFile> _applyDeviceSyncedFilter(List<CatalogFile> files) {
     if (!state.deviceAndSyncedOnly) return files;
     return files.where((f) => f.hasLocalBytes && !f.isDeleted).toList();
+  }
+
+  /// Local catalog search (title / notes / tags). Server ``?q=`` is for API clients.
+  List<CatalogFile> _applySearch(List<CatalogFile> files) {
+    final needle = state.searchQuery.trim().toLowerCase();
+    if (needle.isEmpty) return files;
+    return files.where((f) {
+      if (f.displayName.toLowerCase().contains(needle)) return true;
+      if ((f.notes ?? '').toLowerCase().contains(needle)) return true;
+      return f.tags.any((t) => t.toLowerCase().contains(needle));
+    }).toList();
+  }
+
+  Future<void> setSearchQuery(String query) async {
+    emit(state.copyWith(searchQuery: query));
+    await _emitBrowseList();
   }
 
   Future<void> setBrowseMode(
@@ -199,6 +223,7 @@ class CatalogCubit extends Cubit<CatalogState> {
           .where((f) => f.hasLocalBytes && !f.fileId.startsWith('local:'))
           .toList();
     }
+    files = _applySearch(files);
     if (isClosed) return;
     final preserve =
         state.viewState == CatalogViewState.error ||
@@ -308,7 +333,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
-      await pinService.pin(fileId);
+      await pinService.bringToPhone(fileId);
       final files = await repository.listActiveFiles();
       _catalogFiles = files;
       if (!isClosed) {

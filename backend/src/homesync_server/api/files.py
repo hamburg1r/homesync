@@ -66,9 +66,17 @@ def list_files(
     include_deleted: bool = Query(False),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(
+        None,
+        description="Basic search: case-insensitive match on title, notes, or tag name",
+    ),
 ) -> list[FileOut]:
     rows = catalog_svc.list_files(
-        session, include_deleted=include_deleted, limit=limit, offset=offset
+        session,
+        include_deleted=include_deleted,
+        limit=limit,
+        offset=offset,
+        q=q,
     )
     return [catalog_svc.file_to_out(r) for r in rows]
 

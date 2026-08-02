@@ -13,6 +13,7 @@ part 'catalog_database.g.dart';
     CatalogTags,
     CatalogFileTags,
     CatalogAvailability,
+    CatalogPaths,
     SyncMetaEntries,
     TrackingRules,
     LocalTrackedFiles,
@@ -30,7 +31,7 @@ class CatalogDatabase extends _$CatalogDatabase {
   static const dbName = 'homesync_catalog_v2';
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -44,6 +45,9 @@ class CatalogDatabase extends _$CatalogDatabase {
           if (from < 3) {
             await m.createTable(trackingRules);
             await m.createTable(localTrackedFiles);
+          }
+          if (from < 4) {
+            await m.createTable(catalogPaths);
           }
         },
       );

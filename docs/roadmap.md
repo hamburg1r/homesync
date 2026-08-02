@@ -94,25 +94,27 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_phone_ingest.py`. Flutter: `mobile/test/scenarios/phone_ingest_test.dart` (queue + API). Camera/share UI polish is Later.
 
-## Milestone 6 — Ghost / restore UX
+## Milestone 6 — Ghost / restore UX (done)
 
 **Outcome:** WhatsApp-style story works end-to-end.
 
-- [ ] Surface provenance in UI (“from WhatsApp · on PC only”)
-- [ ] “Bring to phone” = pin + download
-- [ ] Tombstone handling when PC deletes for real
+- [x] Surface provenance in UI (“from WhatsApp · on PC only”)
+- [x] “Bring to phone” = pin + download
+- [x] Tombstone handling when PC deletes for real
 
 **Exit check:** Delete local copy, still see listing, restore from PC.
 
-**E2E:** add `backend/tests/scenarios/test_ghost_restore.py`.
+**E2E:** `backend/tests/scenarios/test_ghost_restore.py`. Flutter: `mobile/test/scenarios/ghost_restore_test.dart`.
 
-## Milestone 7 — Thumbnails + search quality
+## Milestone 7 — Thumbnails + search quality (done)
 
-- [ ] Server-side thumbs for images
-- [ ] Listed-mode thumb sync (small payloads)
-- [ ] Basic search (name, tags; FTS later)
+- [x] Server-side thumbs for images
+- [x] Listed-mode thumb sync (small payloads)
+- [x] Basic search (name, tags; FTS later)
 
-**E2E:** extend scenarios for thumb endpoints / search when they exist.
+**Exit check:** Image files expose `has_thumb`; `GET /v1/thumbs/{file_id}` returns a small JPEG without requiring a full pin; `GET /v1/files?q=` matches title/tags.
+
+**E2E:** `backend/tests/scenarios/test_thumbs_search.py`. Flutter: `mobile/test/scenarios/thumbs_search_test.dart`.
 
 ## Testing / AI guardrails
 
@@ -179,3 +181,5 @@ Record important choices here as they happen.
 | 2026-07-31 | Milestone 4: availability API + blob GET; phone pin = mode + materialize; disk budget | Unpin deletes local bytes, keeps listing; hash-in-place still serves GET |
 | 2026-08-02 | Milestone 5: blob PUT + POST /files ingest; Linux host pinned on create; phone durable queue | Managed CAS for phone uploads; provenance on file_paths; camera UI polish Later |
 | 2026-08-03 | Phone tracking rules (regex + folder) + drawer browse; path-inferred source_kind; misc default group name | Full FS walk not MediaStore; folder/tag browse Later |
+| 2026-08-03 | Milestone 6: provenance in catalog UI; Bring to phone = pin; tombstone drops listing + local bytes | Ghost restore via paths mirror + existing pin/blob APIs |
+| 2026-08-03 | Milestone 7: Pillow thumbs via uv; GET /v1/thumbs; has_thumb hint; GET /v1/files?q= | Listed-mode JPEG cache by content hash; basic LIKE search (FTS Later) |

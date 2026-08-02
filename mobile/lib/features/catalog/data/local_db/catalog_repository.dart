@@ -77,6 +77,15 @@ class CatalogRepository {
               ..where((t) => t.fileId.equals(file.fileId)))
             .go();
 
+        // Tombstone: drop local bytes only if no other active file shares the hash.
+        if (file.deletedAt != null) {
+          await _deleteBlobIfUnreferenced(
+            algo: file.hashAlgo,
+            contentHash: file.contentHash,
+            exceptFileId: file.fileId,
+          );
+        }
+
         // Default remote files to listed for this device unless server sent a row.
         final existing = await (_db.select(_db.catalogAvailability)
               ..where(
@@ -103,6 +112,32 @@ class CatalogRepository {
               CatalogFileTagsCompanion.insert(
                 fileId: ft.fileId,
                 tagId: ft.tagId,
+              ),
+            );
+      }
+
+      // Replace mirrored paths for files in this page (provenance).
+      final pathFileIds = {
+        ...delta.paths.map((p) => p.fileId),
+        ...delta.files.map((f) => f.fileId),
+      };
+      for (final fileId in pathFileIds) {
+        await (_db.delete(_db.catalogPaths)
+              ..where((t) => t.fileId.equals(fileId)))
+            .go();
+      }
+      for (final path in delta.paths) {
+        await _db.into(_db.catalogPaths).insert(
+              CatalogPathsCompanion.insert(
+                id: path.id,
+                fileId: path.fileId,
+                rootId: Value(path.rootId),
+                relativePath: path.relativePath,
+                sourceKind: path.sourceKind,
+                sourceDeviceId: Value(path.sourceDeviceId),
+                isCurrent: Value(path.isCurrent),
+                seenAt: path.seenAt,
+                goneAt: Value(path.goneAt),
               ),
             );
       }
@@ -136,7 +171,7 @@ class CatalogRepository {
     _log.info(
       'catalog',
       'applyDelta files=${delta.files.length} tags=${delta.tags.length} '
-      'availability=${delta.availability.length} '
+      'paths=${delta.paths.length} availability=${delta.availability.length} '
       'cursor=${delta.nextCursor.isEmpty ? "(unchanged)" : delta.nextCursor}',
     );
   }
@@ -223,6 +258,7 @@ class CatalogRepository {
           .getSingleOrNull();
       final mode = AvailabilityMode.parse(avail?.mode ?? 'listed');
       final hasBytes = await _blobs.has(row.hashAlgo, row.contentHash);
+      final sourceKind = await _primarySourceKind(row.fileId);
       result.add(
         CatalogFile(
           fileId: row.fileId,
@@ -239,10 +275,57 @@ class CatalogRepository {
           tags: tags,
           availabilityMode: mode,
           hasLocalBytes: hasBytes,
+          primarySourceKind: sourceKind,
         ),
       );
     }
     return result;
+  }
+
+  /// Prefer current / known provenance for ghost restore labels.
+  Future<String?> _primarySourceKind(String fileId) async {
+    final paths = await (_db.select(_db.catalogPaths)
+          ..where((p) => p.fileId.equals(fileId)))
+        .get();
+    if (paths.isEmpty) return null;
+
+    int rank(CatalogPathRow p) {
+      var score = 0;
+      if (p.isCurrent && p.goneAt == null) score += 100;
+      score += switch (p.sourceKind.toLowerCase()) {
+        'whatsapp' => 50,
+        'camera' => 40,
+        'download' => 30,
+        'misc' => 20,
+        'manual' => 10,
+        _ => 0,
+      };
+      return score;
+    }
+
+    paths.sort((a, b) => rank(b).compareTo(rank(a)));
+    final kind = paths.first.sourceKind.trim().toLowerCase();
+    if (kind.isEmpty || kind == 'unknown') return null;
+    return kind;
+  }
+
+  Future<void> _deleteBlobIfUnreferenced({
+    required String algo,
+    required String contentHash,
+    required String exceptFileId,
+  }) async {
+    final others = await (_db.select(_db.catalogFiles)
+          ..where(
+            (f) =>
+                f.contentHash.equals(contentHash) &
+                f.hashAlgo.equals(algo) &
+                f.deletedAt.isNull() &
+                f.fileId.isNotValue(exceptFileId),
+          ))
+        .get();
+    if (others.isEmpty) {
+      await _blobs.delete(algo, contentHash);
+    }
   }
 
   Future<List<String>> _tagNamesFor(String fileId) async {
