@@ -434,6 +434,10 @@ class CatalogCubit extends Cubit<CatalogState> {
       return;
     }
 
+    // Raise process to FG priority before any long work so Home during
+    // scan/upload does not abort sockets.
+    await backgroundIngest.ensureKeepAlive();
+
     void onIngest(IngestFileProgress p) => _emitIngestProgress(p);
 
     // Catalog delta only — uploads run via [backgroundIngest] so refresh
@@ -497,6 +501,12 @@ class CatalogCubit extends Cubit<CatalogState> {
         },
       ),
     );
+  }
+
+  /// Resume durable uploads after the app returns to the foreground.
+  Future<void> onAppResumed() async {
+    if (!settings.syncEnabled || isClosed) return;
+    _kickBackgroundIngest();
   }
 
   Future<void> onRulesChanged() async {

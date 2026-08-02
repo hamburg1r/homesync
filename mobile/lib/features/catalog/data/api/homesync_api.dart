@@ -459,6 +459,16 @@ class HomesyncApi {
           throw HomesyncApiException('network error: ${e.message}');
         }
         await Future<void>.delayed(_retryDelay(attempt));
+      } on HttpException catch (e) {
+        // e.g. "Connection closed before full header was received"
+        _log.warn('api', 'chunk HTTP error at $offset: $e; resume');
+        offset = await _pollUploadOffset(uploadId, contentLength);
+        onProgress?.call(offset, contentLength);
+        attempt += 1;
+        if (attempt > 12) {
+          throw HomesyncApiException('network error: ${e.message}');
+        }
+        await Future<void>.delayed(_retryDelay(attempt));
       } on HomesyncApiException {
         rethrow;
       }

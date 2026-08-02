@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -12,10 +13,34 @@ import 'package:homesync_mobile/features/settings/presentation/settings_sheet.da
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 
-class CatalogPage extends StatelessWidget {
+class CatalogPage extends StatefulWidget {
   const CatalogPage({super.key, required this.settings});
 
   final SettingsStore settings;
+
+  @override
+  State<CatalogPage> createState() => _CatalogPageState();
+}
+
+class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(context.read<CatalogCubit>().onAppResumed());
+    }
+  }
 
   Future<void> _openSettings(BuildContext context) async {
     final cubit = context.read<CatalogCubit>();
@@ -23,7 +48,7 @@ class CatalogPage extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       builder: (context) => SettingsSheet(
-        settings: settings,
+        settings: widget.settings,
         tracking: getIt<TrackingRepository>(),
         onRulesChanged: () => cubit.onRulesChanged(),
         currentDeviceId: cubit.currentDeviceId,

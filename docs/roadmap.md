@@ -196,3 +196,4 @@ Record important choices here as they happen.
 | 2026-08-03 | Tracked pending/failed show upload chip (not listed) | Was mapped to availability listed; onIndexed refreshes list mid-scan |
 | 2026-08-03 | Ingest: BLAKE3 on isolate; throttle progress; scoped rebuilds | Per-chunk UI rebuilds + main-isolate hash caused frame skips |
 | 2026-08-03 | Background ingest + Android `dataSync` FG service | Refresh must not wait for uploads; survive app background |
+| 2026-08-03 | Ingest HTTP runs in FG task isolate (not UI isolate) | Home paused UI isolate and aborted sockets mid-upload |
