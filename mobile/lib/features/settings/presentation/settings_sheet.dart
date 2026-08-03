@@ -101,6 +101,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         patternOrUri: result.patternOrUri,
         tags: result.tags,
         sourceKind: result.sourceKind,
+        bindToServer: result.bindToServer,
       );
       widget.onRulesChanged?.call();
       await _reloadRules();
@@ -177,6 +178,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         parentId: folder.id,
         tags: result.tags,
         sourceKind: result.sourceKind,
+        bindToServer: result.bindToServer,
       );
       widget.onRulesChanged?.call();
       await _reloadRules();
@@ -206,6 +208,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         tags: draft.tags,
         sourceKind: draft.sourceKind,
         clearSourceKind: draft.sourceKind == null,
+        bindToServer: draft.bindToServer,
       );
       await widget.tracking.updateRule(updated);
       final result = await widget.scanner.propagateRuleEdit(
@@ -220,7 +223,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
           content: Text(
             'Updated rule'
             '${result.tagsUpdated > 0 ? '; tags synced on ${result.tagsUpdated}' : ''}'
-            '${result.sourceKindUpdated > 0 ? '; source_kind synced on ${result.sourceKindUpdated}' : ''}',
+            '${result.sourceKindUpdated > 0 ? '; source_kind synced on ${result.sourceKindUpdated}' : ''}'
+            '${result.bindUpdated > 0 ? '; bound-to-server on ${result.bindUpdated}' : ''}',
           ),
         ),
       );

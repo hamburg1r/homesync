@@ -27,6 +27,7 @@ class _AddTrackingRuleDialogState extends State<AddTrackingRuleDialog> {
   final _pattern = TextEditingController();
   final _tags = TextEditingController();
   final _sourceKind = TextEditingController();
+  bool _bindToServer = false;
 
   @override
   void initState() {
@@ -65,6 +66,7 @@ class _AddTrackingRuleDialogState extends State<AddTrackingRuleDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final isRegex = widget.kind == TrackingRuleKind.regex;
     return AlertDialog(
       title: Text(_dialogTitle),
       content: SingleChildScrollView(
@@ -112,6 +114,18 @@ class _AddTrackingRuleDialogState extends State<AddTrackingRuleDialog> {
                 border: OutlineInputBorder(),
               ),
             ),
+            if (isRegex) ...[
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Bound to server'),
+                subtitle: const Text(
+                  'Matching files delete local pins when soft-deleted on the PC',
+                ),
+                value: _bindToServer,
+                onChanged: (v) => setState(() => _bindToServer = v),
+              ),
+            ],
           ],
         ),
       ),
@@ -131,6 +145,7 @@ class _AddTrackingRuleDialogState extends State<AddTrackingRuleDialog> {
                 sourceKind: _sourceKind.text.trim().isEmpty
                     ? null
                     : _sourceKind.text.trim(),
+                bindToServer: isRegex && _bindToServer,
               ),
             );
           },

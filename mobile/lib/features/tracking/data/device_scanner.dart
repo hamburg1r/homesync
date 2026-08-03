@@ -474,6 +474,7 @@ class DeviceScanner {
           sizeBytes: file.sizeBytes,
           mtimeMs: (await source.stat()).modified.millisecondsSinceEpoch,
         );
+        await applyBindToServer(match: match, fileId: file.fileId);
         ingested += 1;
       } on KdbxConflictPendingException catch (e) {
         log.warn(
@@ -496,6 +497,33 @@ class DeviceScanner {
       }
     }
     return ingested;
+  }
+
+  /// Apply Bound to server for a synced file when matching rules request it.
+  Future<void> applyBindToServer({
+    required TrackingRuleMatch? match,
+    required String fileId,
+  }) async {
+    if (match == null || !match.effectiveBindToServer) return;
+    try {
+      await ingest.repository.setBoundToServer(fileId, bound: true);
+    } catch (e) {
+      log.warn('tracking', 'bindToServer failed $fileId: $e');
+    }
+  }
+
+  /// Re-match [path] against enabled rules and apply Bound to server if needed.
+  Future<void> applyBindForPath(String path, String fileId) async {
+    final rules =
+        (await repository.listRules()).where((r) => r.enabled).toList();
+    final ctx = _MatchContext.fromForest(rules);
+    final match = _matchRule(
+      path: path,
+      topLevelRegex: ctx.topLevelRegex,
+      folderRules: ctx.folderRules,
+      fileRulePaths: ctx.fileRulePaths,
+    );
+    await applyBindToServer(match: match, fileId: fileId);
   }
 
   /// True when the local index digest still matches this on-disk revision.
@@ -665,6 +693,7 @@ class DeviceScanner {
     final removedTags = before.tags.toSet().difference(after.tags.toSet());
     var tagsUpdated = 0;
     var sourceKindUpdated = 0;
+    var bindUpdated = 0;
 
     for (final row in tracked) {
       final match = _matchRule(
@@ -742,11 +771,23 @@ class DeviceScanner {
           log.warn('tracking', 'source_kind propagate failed $fileId: $e');
         }
       }
+
+      if (before.bindToServer != after.bindToServer ||
+          match.effectiveBindToServer != (existing?.boundToServer ?? false)) {
+        final wantBound = match.effectiveBindToServer;
+        try {
+          await ingest.repository.setBoundToServer(fileId, bound: wantBound);
+          bindUpdated += 1;
+        } catch (e) {
+          log.warn('tracking', 'bindToServer propagate failed $fileId: $e');
+        }
+      }
     }
 
     return RulePropagateResult(
       tagsUpdated: tagsUpdated,
       sourceKindUpdated: sourceKindUpdated,
+      bindUpdated: bindUpdated,
     );
   }
 
@@ -814,10 +855,12 @@ class RulePropagateResult {
   const RulePropagateResult({
     required this.tagsUpdated,
     required this.sourceKindUpdated,
+    this.bindUpdated = 0,
   });
 
   final int tagsUpdated;
   final int sourceKindUpdated;
+  final int bindUpdated;
 }
 
 class ScanResult {

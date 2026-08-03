@@ -601,6 +601,7 @@ class BackgroundIngestRunner {
           sizeBytes: created.sizeBytes,
           mtimeMs: stat?.modified.millisecondsSinceEpoch,
         );
+        await scanner.applyBindForPath(path, created.fileId);
       }
       log.info(
         'ingest',

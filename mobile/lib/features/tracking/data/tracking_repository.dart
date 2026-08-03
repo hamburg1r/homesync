@@ -53,6 +53,7 @@ class TrackingRepository {
     String? parentId,
     List<String> tags = const [],
     String? sourceKind,
+    bool bindToServer = false,
   }) async {
     final id = const Uuid().v4();
     final now = DateTime.now().toUtc().toIso8601String();
@@ -63,6 +64,9 @@ class TrackingRepository {
     // before any scan/upload. Include-children default on (filters only apply
     // once the parent folder is enabled).
     final resolvedEnabled = enabled ?? (parentId != null);
+    // Bound-to-server opt-in is only meaningful on regex rules (incl. children).
+    final resolvedBind =
+        kind == TrackingRuleKind.regex ? bindToServer : false;
 
     if (parentId != null) {
       if (kind != TrackingRuleKind.regex) {
@@ -97,13 +101,15 @@ class TrackingRepository {
             parentId: Value(parentId),
             tagsJson: Value(encodeTagsJson(cleanedTags)),
             sourceKind: Value(cleanedSource),
+            bindToServer: Value(resolvedBind),
           ),
         );
     _log.info(
       'tracking',
       'added rule $resolvedName (${kind.wire}'
       '${parentId != null ? ', child of $parentId' : ''}'
-      ', enabled=$resolvedEnabled)',
+      ', enabled=$resolvedEnabled'
+      '${resolvedBind ? ', bindToServer' : ''})',
     );
     return TrackingRule(
       id: id,
@@ -115,6 +121,7 @@ class TrackingRepository {
       parentId: parentId,
       tags: cleanedTags,
       sourceKind: cleanedSource,
+      bindToServer: resolvedBind,
     );
   }
 
@@ -131,6 +138,8 @@ class TrackingRepository {
         throw ArgumentError('invalid parent for child rule');
       }
     }
+    final bind =
+        rule.kind == TrackingRuleKind.regex ? rule.bindToServer : false;
     await (_db.update(_db.trackingRules)..where((t) => t.id.equals(rule.id)))
         .write(
       TrackingRulesCompanion(
@@ -141,6 +150,7 @@ class TrackingRepository {
         parentId: Value(rule.parentId),
         tagsJson: Value(encodeTagsJson(normalizeTagList(rule.tags))),
         sourceKind: Value(_normalizeSourceKind(rule.sourceKind)),
+        bindToServer: Value(bind),
       ),
     );
   }
@@ -406,6 +416,7 @@ class TrackingRepository {
       parentId: row.parentId,
       tags: decodeTagsJson(row.tagsJson),
       sourceKind: row.sourceKind,
+      bindToServer: row.bindToServer,
     );
   }
 

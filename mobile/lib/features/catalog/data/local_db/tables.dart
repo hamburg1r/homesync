@@ -94,6 +94,10 @@ class TrackingRules extends Table {
   TextColumn get tagsJson => text().withDefault(const Constant('[]'))();
   /// Optional `source_kind` override; null keeps path heuristic.
   TextColumn get sourceKind => text().nullable()();
+  /// When true, matched files are Bound to server after ingest (PC tombstone
+  /// also deletes local pin bytes).
+  BoolColumn get bindToServer =>
+      boolean().withDefault(const Constant(false))();
 
   @override
   Set<Column<Object>> get primaryKey => {id};

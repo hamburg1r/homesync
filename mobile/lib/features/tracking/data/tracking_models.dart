@@ -41,6 +41,7 @@ class TrackingRule {
     this.parentId,
     this.tags = const [],
     this.sourceKind,
+    this.bindToServer = false,
     this.children = const [],
   });
 
@@ -55,6 +56,8 @@ class TrackingRule {
   final List<String> tags;
   /// Optional ingest `source_kind`; null ⇒ path heuristic.
   final String? sourceKind;
+  /// After ingest, mark matches Bound to server (PC tombstone deletes pin).
+  final bool bindToServer;
   /// Include-regex children (folder parents only; empty for others).
   final List<TrackingRule> children;
 
@@ -79,6 +82,7 @@ class TrackingRule {
     String? parentId,
     List<String>? tags,
     String? sourceKind,
+    bool? bindToServer,
     List<TrackingRule>? children,
     bool clearParentId = false,
     bool clearSourceKind = false,
@@ -93,6 +97,7 @@ class TrackingRule {
       parentId: clearParentId ? null : (parentId ?? this.parentId),
       tags: tags ?? this.tags,
       sourceKind: clearSourceKind ? null : (sourceKind ?? this.sourceKind),
+      bindToServer: bindToServer ?? this.bindToServer,
       children: children ?? this.children,
     );
   }
@@ -148,6 +153,10 @@ class TrackingRuleMatch {
     }
     return best?.sourceKind;
   }
+
+  /// True if any matching rule requests Bound to server after ingest.
+  bool get effectiveBindToServer =>
+      _tagSources.any((r) => r.bindToServer);
 }
 
 int _sourceKindRank(TrackingRule r) {

@@ -37,8 +37,8 @@ class SettingsTrackingSection extends StatelessWidget {
           'include-regex children under a folder, then flip the switch. '
           'Folder with no children = whole tree; with include-regex children = '
           'only matching files. Disable cancels pending uploads for that rule. '
-          'Edit tags or source_kind to re-sync matching files; '
-          'overlapping rules union tags.',
+          'Edit tags, source_kind, or Bound to server to re-sync matching '
+          'files; overlapping rules union tags.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 12),
@@ -144,9 +144,16 @@ class _RuleTile extends StatelessWidget {
                     'source_kind: ${rule.sourceKind}',
                     style: theme.textTheme.labelSmall,
                   ),
+                if (rule.bindToServer)
+                  Text(
+                    'Bound to server',
+                    style: theme.textTheme.labelSmall,
+                  ),
               ],
             ),
-            isThreeLine: rule.tags.isNotEmpty || rule.sourceKind != null,
+            isThreeLine: rule.tags.isNotEmpty ||
+                rule.sourceKind != null ||
+                rule.bindToServer,
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

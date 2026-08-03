@@ -17,6 +17,7 @@ class _EditTrackingRuleDialogState extends State<EditTrackingRuleDialog> {
   late final TextEditingController _pattern;
   late final TextEditingController _tags;
   late final TextEditingController _sourceKind;
+  late bool _bindToServer;
 
   @override
   void initState() {
@@ -25,6 +26,7 @@ class _EditTrackingRuleDialogState extends State<EditTrackingRuleDialog> {
     _pattern = TextEditingController(text: widget.rule.patternOrUri);
     _tags = TextEditingController(text: widget.rule.tags.join(', '));
     _sourceKind = TextEditingController(text: widget.rule.sourceKind ?? '');
+    _bindToServer = widget.rule.bindToServer;
   }
 
   @override
@@ -102,6 +104,19 @@ class _EditTrackingRuleDialogState extends State<EditTrackingRuleDialog> {
                 helperText: 'Blank = path heuristic. Change re-syncs matches.',
               ),
             ),
+            if (isRegex) ...[
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Bound to server'),
+                subtitle: const Text(
+                  'Matching files delete local pins when soft-deleted on the PC. '
+                  'Saving re-applies to already synced matches.',
+                ),
+                value: _bindToServer,
+                onChanged: (v) => setState(() => _bindToServer = v),
+              ),
+            ],
           ],
         ),
       ),
@@ -121,6 +136,7 @@ class _EditTrackingRuleDialogState extends State<EditTrackingRuleDialog> {
                 sourceKind: _sourceKind.text.trim().isEmpty
                     ? null
                     : _sourceKind.text.trim(),
+                bindToServer: isRegex && _bindToServer,
               ),
             );
           },
