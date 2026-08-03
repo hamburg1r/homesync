@@ -824,4 +824,56 @@ class HomesyncApi {
       jsonDecode(response.body) as Map<String, dynamic>,
     );
   }
+
+  /// Replace all tags on a file (server creates missing tag names).
+  Future<CatalogFile> putFileTags({
+    required String fileId,
+    required List<String> tags,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'PUT /v1/files/…/tags',
+      _client.put(
+        _uri('/v1/files/$fileId/tags'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'tags': tags}),
+      ),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('file not found', statusCode: 404);
+    }
+    if (response.statusCode == 400) {
+      throw HomesyncApiException(
+        'invalid tags',
+        statusCode: 400,
+      );
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'set file tags failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<CatalogTag>> listTags() async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'GET /v1/tags',
+      _client.get(_uri('/v1/tags')),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'list tags failed',
+        statusCode: response.statusCode,
+      );
+    }
+    final list = jsonDecode(response.body) as List<dynamic>;
+    return list
+        .map((e) => CatalogTag.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
 }

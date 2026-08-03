@@ -15,6 +15,8 @@ class CatalogFileTile extends StatelessWidget {
     this.onDeleteFromPc,
     this.onForgetLocal,
     this.onBoundToServer,
+    this.onSetTags,
+    this.onTagSuggestions,
     this.onOpen,
     this.onResolveLocalPath,
     this.onCatalogRelativePath,
@@ -28,6 +30,8 @@ class CatalogFileTile extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
   final Future<String?> Function(CatalogFile file)? onForgetLocal;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
+  final Future<String?> Function(CatalogFile file, List<String> tags)? onSetTags;
+  final Future<List<String>> Function()? onTagSuggestions;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
   final Future<String?> Function(CatalogFile file)? onCatalogRelativePath;
@@ -87,6 +91,8 @@ class CatalogFileTile extends StatelessWidget {
             onDeleteFromPc: onDeleteFromPc,
             onForgetLocal: onForgetLocal,
             onBoundToServer: onBoundToServer,
+            onSetTags: onSetTags,
+            onTagSuggestions: onTagSuggestions,
             onOpen: onOpen,
             localPathFuture: onResolveLocalPath?.call(file),
             catalogPathFuture: onCatalogRelativePath?.call(file),

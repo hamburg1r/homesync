@@ -554,6 +554,62 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
   }
 
+  /// Replace tags on a catalog file (online). Updates local mirror from server ids.
+  Future<String?> setFileTags(String fileId, List<String> tags) async {
+    if (fileId.startsWith('local:')) {
+      return 'Sync this file first (pending ingest)';
+    }
+    emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
+    try {
+      final updated = await api.putFileTags(fileId: fileId, tags: tags);
+      final allTags = await api.listTags();
+      final desiredLower = {
+        for (final n in updated.tags) n.toLowerCase(),
+      };
+      final matched = allTags
+          .where((t) => desiredLower.contains(t.name.toLowerCase()))
+          .toList();
+      // Preserve FileOut order when possible.
+      matched.sort((a, b) {
+        final ia = updated.tags.indexWhere(
+          (n) => n.toLowerCase() == a.name.toLowerCase(),
+        );
+        final ib = updated.tags.indexWhere(
+          (n) => n.toLowerCase() == b.name.toLowerCase(),
+        );
+        return ia.compareTo(ib);
+      });
+      await repository.replaceFileTags(
+        fileId: fileId,
+        tags: matched,
+        updatedAt: updated.updatedAt,
+      );
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      if (!isClosed) {
+        emit(state.copyWith(clearBusyFileId: true));
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'set tags failed: $e');
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            clearBusyFileId: true,
+            statusMessage: e.toString(),
+          ),
+        );
+      }
+      return e.toString();
+    }
+  }
+
+  Future<List<String>> listTagSuggestions() async {
+    final tags = await repository.listAllTags();
+    return tags.map((t) => t.name).toList();
+  }
+
   /// Drop a local tombstone / leftover catalog row without a server call.
   Future<String?> forgetLocalFile(String fileId) async {
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));

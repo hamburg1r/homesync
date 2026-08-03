@@ -623,6 +623,55 @@ class CatalogRepository {
     return rows.map((r) => r.readTable(_db.catalogTags).name).toList();
   }
 
+  /// All mirrored tags (for suggestions / autocomplete).
+  Future<List<CatalogTag>> listAllTags() async {
+    final rows = await (_db.select(_db.catalogTags)
+          ..orderBy([(t) => OrderingTerm.asc(t.name)]))
+        .get();
+    return rows
+        .map(
+          (r) => CatalogTag(
+            tagId: r.tagId,
+            name: r.name,
+            color: r.color,
+          ),
+        )
+        .toList();
+  }
+
+  /// Replace local tags for a file using server tag rows; bump `updated_at`.
+  Future<void> replaceFileTags({
+    required String fileId,
+    required List<CatalogTag> tags,
+    required String updatedAt,
+  }) async {
+    await _db.transaction(() async {
+      for (final tag in tags) {
+        await _db.into(_db.catalogTags).insertOnConflictUpdate(
+              CatalogTagsCompanion.insert(
+                tagId: tag.tagId,
+                name: tag.name,
+                color: Value(tag.color),
+              ),
+            );
+      }
+      await (_db.delete(_db.catalogFileTags)
+            ..where((t) => t.fileId.equals(fileId)))
+          .go();
+      for (final tag in tags) {
+        await _db.into(_db.catalogFileTags).insert(
+              CatalogFileTagsCompanion.insert(
+                fileId: fileId,
+                tagId: tag.tagId,
+              ),
+            );
+      }
+      await (_db.update(_db.catalogFiles)
+            ..where((f) => f.fileId.equals(fileId)))
+          .write(CatalogFilesCompanion(updatedAt: Value(updatedAt)));
+    });
+  }
+
   static const _deltaCursorKey = 'delta_cursor';
   static const _purgeCursorKey = 'purge_cursor';
 }

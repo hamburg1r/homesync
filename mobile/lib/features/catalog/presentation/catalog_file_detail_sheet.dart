@@ -12,6 +12,8 @@ class CatalogFileDetailSheet extends StatefulWidget {
     this.onDeleteFromPc,
     this.onForgetLocal,
     this.onBoundToServer,
+    this.onSetTags,
+    this.onTagSuggestions,
     this.onOpen,
     this.localPathFuture,
     this.catalogPathFuture,
@@ -24,6 +26,9 @@ class CatalogFileDetailSheet extends StatefulWidget {
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
   final Future<String?> Function(CatalogFile file)? onForgetLocal;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
+  /// Replace tags on the file (full list). Returns error string or null.
+  final Future<String?> Function(CatalogFile file, List<String> tags)? onSetTags;
+  final Future<List<String>> Function()? onTagSuggestions;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?>? localPathFuture;
   final Future<String?>? catalogPathFuture;
@@ -35,11 +40,72 @@ class CatalogFileDetailSheet extends StatefulWidget {
 class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
   late bool _bound;
   bool _bindingBusy = false;
+  late List<String> _tags;
+  bool _tagsBusy = false;
+  final _tagController = TextEditingController();
+  List<String> _suggestions = const [];
+
+  bool get _canEditTags =>
+      widget.onSetTags != null &&
+      !widget.file.isDeleted &&
+      !widget.file.isUploadPending &&
+      !widget.file.isUploadFailed &&
+      !widget.file.fileId.startsWith('local:');
 
   @override
   void initState() {
     super.initState();
     _bound = widget.file.boundToServer;
+    _tags = List<String>.from(widget.file.tags);
+    if (_canEditTags && widget.onTagSuggestions != null) {
+      widget.onTagSuggestions!().then((names) {
+        if (mounted) setState(() => _suggestions = names);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _tagController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _applyTags(List<String> next) async {
+    final cb = widget.onSetTags;
+    if (cb == null || _tagsBusy) return;
+    final normalized = _normalizeTags(next);
+    setState(() {
+      _tagsBusy = true;
+      _tags = normalized;
+    });
+    final err = await cb(widget.file, normalized);
+    if (!mounted) return;
+    setState(() => _tagsBusy = false);
+    if (err != null) {
+      setState(() => _tags = List<String>.from(widget.file.tags));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    }
+  }
+
+  static List<String> _normalizeTags(List<String> raw) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final r in raw) {
+      final name = r.trim();
+      if (name.isEmpty) continue;
+      final key = name.toLowerCase();
+      if (seen.contains(key)) continue;
+      seen.add(key);
+      out.add(name);
+    }
+    return out;
+  }
+
+  Future<void> _addTagFromField() async {
+    final name = _tagController.text.trim();
+    if (name.isEmpty) return;
+    _tagController.clear();
+    await _applyTags([..._tags, name]);
   }
 
   Future<void> _confirmDelete(BuildContext context) async {
@@ -120,10 +186,88 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
     }
   }
 
+  Widget _buildTagsSection(BuildContext context) {
+    final busy = widget.busy || _tagsBusy;
+    if (!_canEditTags) {
+      if (_tags.isEmpty) return const SizedBox.shrink();
+      return Text('Tags: ${_tags.join(", ")}');
+    }
+    final unusedSuggestions = _suggestions
+        .where(
+          (s) => !_tags.any((t) => t.toLowerCase() == s.toLowerCase()),
+        )
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Tags', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            for (final tag in _tags)
+              InputChip(
+                label: Text(tag),
+                onDeleted: busy
+                    ? null
+                    : () => _applyTags(_tags.where((t) => t != tag).toList()),
+              ),
+            if (_tags.isEmpty)
+              Text(
+                'No tags',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _tagController,
+                enabled: !busy,
+                decoration: const InputDecoration(
+                  hintText: 'Add tag',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => _addTagFromField(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              onPressed: busy ? null : _addTagFromField,
+              icon: const Icon(Icons.add),
+              tooltip: 'Add tag',
+            ),
+          ],
+        ),
+        if (unusedSuggestions.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final name in unusedSuggestions.take(8))
+                ActionChip(
+                  label: Text(name),
+                  onPressed: busy
+                      ? null
+                      : () => _applyTags([..._tags, name]),
+                ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final file = widget.file;
-    final busy = widget.busy;
+    final busy = widget.busy || _tagsBusy;
     final bringLabel = file.isGhost ? 'Bring to phone' : 'Pin';
     final canDeleteFromPc = widget.onDeleteFromPc != null &&
         !file.isDeleted &&
@@ -191,7 +335,8 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
                   },
                 ),
               Text('Hash: ${file.hashAlgo}:${file.contentHash}'),
-              if (file.tags.isNotEmpty) Text('Tags: ${file.tags.join(", ")}'),
+              const SizedBox(height: 8),
+              _buildTagsSection(context),
               if (file.notes != null && file.notes!.isNotEmpty)
                 Text('Notes: ${file.notes}'),
               if (showBoundToggle) ...[
@@ -355,7 +500,9 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
                         ),
                       ),
                     ),
-                  if (file.isDeleted && !file.hasLocalBytes && widget.onForgetLocal == null)
+                  if (file.isDeleted &&
+                      !file.hasLocalBytes &&
+                      widget.onForgetLocal == null)
                     TextButton(
                       onPressed: () => Navigator.pop(context),
                       child: const Text('Removed from PC — metadata only'),

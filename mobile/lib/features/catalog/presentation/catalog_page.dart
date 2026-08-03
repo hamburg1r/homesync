@@ -126,6 +126,10 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           onBoundToServer: (file, bound) => context
               .read<CatalogCubit>()
               .setBoundToServer(file.fileId, bound: bound),
+          onSetTags: (file, tags) =>
+              context.read<CatalogCubit>().setFileTags(file.fileId, tags),
+          onTagSuggestions: () =>
+              context.read<CatalogCubit>().listTagSuggestions(),
           onOpen: (file) => _openFile(context, file),
           onResolveLocalPath: (file) =>
               context.read<CatalogCubit>().resolveLocalPath(file),

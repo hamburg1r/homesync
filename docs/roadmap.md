@@ -229,3 +229,4 @@ Record important choices here as they happen.
 | 2026-08-03 | Milestone 8: head+history versions under stable `file_id`; not file↔file links | Path is local binding only; history starts at first observation; `POST …/content` archives old head |
 | 2026-08-03 | Milestone 9: kdbx conflict outbox; daemon secret for trivial semantic auto-diff; collision = bound `file_id` only | Phone interactive resolve for real entry diffs; Bound-to-server unrelated |
 | 2026-08-03 | Manual GC: `POST /v1/gc` + `homesync-gc`; `gc_purges` + delta `purged[]` | Soft-delete until explicit hard-purge; phone Forget for leftover Removed rows |
+| 2026-08-03 | Phone tag edit via PUT `/files/{id}/tags` + chip UI in detail sheet | Display/search already existed; write path was missing; browse-by-tag Later |

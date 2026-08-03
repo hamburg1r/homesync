@@ -148,6 +148,8 @@ PUT /v1/files/{file_id}/tags
 { "tags": ["family", "receipts"] }
 ```
 
+**Phone tagging (v1):** Flutter detail sheet edits tags online via `PUT …/tags`, then `GET /v1/tags` to resolve `tag_id`s into the local Drift mirror. No offline tag queue. Browse-by-tag remains Later.
+
 **Search (v1):** `q` is a basic substring match on `title`, `notes`, and tag names (SQLite `LIKE`, case-insensitive). FTS is Later. Soft-deleted rows are excluded unless `include_deleted=true`.
 
 **LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
