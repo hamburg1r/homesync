@@ -209,6 +209,17 @@ abstract class CatalogFilePath with _$CatalogFilePath {
 }
 
 @freezed
+abstract class CatalogPurge with _$CatalogPurge {
+  const factory CatalogPurge({
+    @JsonKey(name: 'file_id') required String fileId,
+    @JsonKey(name: 'purged_at') required String purgedAt,
+  }) = _CatalogPurge;
+
+  factory CatalogPurge.fromJson(Map<String, dynamic> json) =>
+      _$CatalogPurgeFromJson(json);
+}
+
+@freezed
 abstract class CatalogDelta with _$CatalogDelta {
   const factory CatalogDelta({
     @JsonKey(name: 'next_cursor') @Default('') String nextCursor,
@@ -217,6 +228,8 @@ abstract class CatalogDelta with _$CatalogDelta {
     @JsonKey(name: 'file_tags') @Default([]) List<CatalogFileTag> fileTags,
     @Default([]) List<CatalogFilePath> paths,
     @Default([]) List<CatalogAvailability> availability,
+    @Default([]) List<CatalogPurge> purged,
+    @JsonKey(name: 'next_purge_cursor') @Default('') String nextPurgeCursor,
   }) = _CatalogDelta;
 
   factory CatalogDelta.fromJson(Map<String, dynamic> json) =>

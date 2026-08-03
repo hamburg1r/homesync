@@ -76,6 +76,7 @@ class CatalogSync {
     }
     await identity.reclaim(deviceId);
     await repository.clearDeltaCursor();
+    await repository.clearPurgeCursor();
     log.info('sync', 'reclaim device → ${deviceId.trim()}; full catalog pull');
     return sync();
   }
@@ -88,6 +89,7 @@ class CatalogSync {
     }
     final id = await identity.resetToNew();
     await repository.clearDeltaCursor();
+    await repository.clearPurgeCursor();
     log.info('sync', 'reset device → $id; full catalog pull');
     return sync();
   }
@@ -112,11 +114,16 @@ class CatalogSync {
           : 0;
 
       var cursor = await repository.getDeltaCursor();
+      var purgeCursor = await repository.getPurgeCursor();
       var pages = 0;
       var filesTouched = 0;
 
       while (true) {
-        final delta = await api.catalogDelta(since: cursor, limit: pageLimit);
+        final delta = await api.catalogDelta(
+          since: cursor,
+          purgeSince: purgeCursor,
+          limit: pageLimit,
+        );
         pages += 1;
         filesTouched += delta.files.length;
         await repository.applyDelta(delta);
@@ -124,9 +131,15 @@ class CatalogSync {
         final next = delta.nextCursor;
         final progressed = next.isNotEmpty && next != cursor;
         final hasRows = delta.files.isNotEmpty;
+        final purgeNext = delta.nextPurgeCursor;
+        final purgeProgressed =
+            purgeNext.isNotEmpty && purgeNext != purgeCursor;
+        final hasPurges = delta.purged.isNotEmpty;
         cursor = next.isEmpty ? cursor : next;
+        purgeCursor = purgeNext.isEmpty ? purgeCursor : purgeNext;
 
-        if (!hasRows || !progressed || delta.files.length < pageLimit) {
+        if ((!hasRows || !progressed || delta.files.length < pageLimit) &&
+            (!hasPurges || !purgeProgressed || delta.purged.length < pageLimit)) {
           break;
         }
       }
@@ -134,7 +147,7 @@ class CatalogSync {
       log.info(
         'sync',
         'ok pages=$pages filesTouched=$filesTouched '
-        'ingestsFlushed=$flushed cursor=$cursor',
+        'ingestsFlushed=$flushed cursor=$cursor purgeCursor=$purgeCursor',
       );
       return SyncResult(
         outcome: SyncOutcome.ok,

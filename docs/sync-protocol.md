@@ -57,10 +57,12 @@ GET /v1/devices/{device_id}
 ## Catalog delta
 
 ```http
-GET /v1/catalog/delta?since=<cursor>&limit=500
+GET /v1/catalog/delta?since=<cursor>&purge_since=<iso>&limit=500
 ```
 
 **Cursor (v1 implemented):** opaque `v1:{updated_at}|{file_id}` ordered lexicographically by `(updated_at, file_id)`. Empty / omitted `since` = full scan from the beginning. Tag edits and metadata patches bump `files.updated_at` so they appear in subsequent deltas. A changelog table may replace this later without changing the opaque cursor namespace if we bump to `v2:…`.
+
+**Purge cursor:** optional `purge_since` (ISO `purged_at` from a prior page). Response includes `purged: [{file_id, purged_at}]` and `next_purge_cursor` so phones can hard-delete leftover soft-deleted local rows after Linux GC. File cursor and purge cursor advance independently.
 
 Response shape:
 
@@ -71,7 +73,9 @@ Response shape:
   "tags": [ { "tag_id": "…", "name": "family", "color": null } ],
   "file_tags": [ { "file_id": "…", "tag_id": "…" } ],
   "availability": [],
-  "paths": [ … ]
+  "paths": [ … ],
+  "purged": [ { "file_id": "…", "purged_at": "…" } ],
+  "next_purge_cursor": "…"
 }
 ```
 
@@ -138,6 +142,7 @@ PATCH /v1/files/{file_id}
   "base_updated_at": "last-seen-server-time"
 }
 DELETE /v1/files/{file_id}   # soft-delete (sets deleted_at; frees UNIQUE content_hash via tombstone: sentinel)
+POST /v1/gc                  # manual hard-purge + unreferenced blob/thumb/upload GC
 GET /v1/tags
 PUT /v1/files/{file_id}/tags
 { "tags": ["family", "receipts"] }
@@ -148,6 +153,30 @@ PUT /v1/files/{file_id}/tags
 **LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
 
 Manual curl smoke: `scripts/metadata_api_smoke.sh` (daemon on `127.0.0.1:8787`, catalog already indexed).
+
+## Garbage collection (manual)
+
+```http
+POST /v1/gc
+{
+  "dry_run": false,
+  "purge_tombstones": true,
+  "purge_blobs": true,
+  "purge_uploads": true,
+  "min_age_seconds": 0,
+  "file_ids": null
+}
+```
+
+CLI: `homesync-gc [--dry-run] [--min-age SECONDS] [--file-id …]`.
+
+Behavior:
+
+1. Hard-delete soft-deleted `files` rows (and children) older than `min_age_seconds`; skip files with an **open** KeePass conflict outbox. Record each id in `gc_purges`.
+2. Unlink managed `blobs/<algo>/…` and `thumbs/…` objects whose digest is not referenced by remaining file heads, `versions`, or kdbx candidates. Never unlink library-root hash-in-place files.
+3. Wipe expired resumable upload partials under `uploads/` (idle > 7 days).
+
+Phones pull `purged[]` via catalog delta (`purge_since` / `next_purge_cursor`) and drop leftover tombstone **catalog** rows. Local pin/CAS bytes are removed only when the file was **Bound to server** (same rule as soft-delete); unbound local copies are left on disk. Local **Forget** on Removed from PC follows the same byte policy.
 
 ## Content versions (head + history)
 
@@ -280,7 +309,7 @@ sequenceDiagram
 - Linux retention: create pins the host `linux` device to `pinned` so the managed blob is kept.
 - Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync). Tracking ingest hashes and uploads **one file at a time** via **resumable chunked upload** from the **original path** (no app-storage duplicate). Pin store is only for PC→phone materialization / small in-memory ingest. UI shows per-file progress (hash → upload). File detail shows on-device path (and catalog relative path when mirrored); **Open** launches an Android `ACTION_VIEW` intent via `open_filex`.
 - **Tracking rules (phone):** named regex/folder/**file** rules in Settings (empty = no auto upload). Group name optional (default `misc`). Scanner walks granted storage roots for regex/folder; file rules target one absolute path. `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the durable queue. Tracked files waiting to upload show chip **`pending`**; failures show **`failed`** — not availability `listed`. Catalog refresh indexes first then kicks **background ingest** (does not wait for uploads). On Android a `dataSync` foreground service starts early (while still foreground); main isolate hashes/enqueues, **upload HTTP runs in the task isolate** (no Drift there), then main commits catalog rows — so Home does not abort sockets and dual-isolate SQLite is avoided; durable queue resumes on app resume.
-- **Sync pause (phone):** Settings → Sync with PC off skips catalog delta + tracking ingest; local catalog remains browsable. Soft-delete from a file’s detail sheet calls `DELETE /v1/files/{id}` (tombstone; blob GC still deferred).
+- **Sync pause (phone):** Settings → Sync with PC off skips catalog delta + tracking ingest; local catalog remains browsable. Soft-delete from a file’s detail sheet calls `DELETE /v1/files/{id}` (tombstone until `POST /v1/gc` / `homesync-gc`).
 
 ## WhatsApp-style restore (canonical story)
 
@@ -307,7 +336,7 @@ flowchart TD
 - Phone mirrors paths locally and surfaces provenance (`from WhatsApp · on PC only` when listed without bytes).
 - **Bring to phone** = same as pin (availability `pinned` + blob GET). When bytes are not already on device, the UI asks for a **download folder + file name** (default from Settings → Pin download folder; empty = app `homesync_pins` CAS). Custom destinations are recorded in `pin_local_paths`.
 - **Keep on PC only** = availability `listed` + delete local copies (CAS pin store, custom pin path, and phone-origin path if present). Catalog listing remains (ghost again).
-- Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the **active** listing. Drawer → **Removed from PC** lists those soft-deleted rows (chip `removed`, not `pinned`). Local pin bytes remain unless **Bound to server**; **Remove from device** discards them without a server call. Explicit **Remove from PC** on the phone still drops local bytes. Blob GC on Linux remains deferred.
+- Soft-delete on PC (`DELETE /v1/files/{id}`) → tombstone in delta (`deleted_at` set); phone drops the **active** listing. Drawer → **Removed from PC** lists those soft-deleted rows (chip `removed`, not `pinned`). Local pin bytes remain unless **Bound to server**; **Remove from device** discards them without a server call. Explicit **Remove from PC** on the phone still drops local bytes. **Forget** drops the local tombstone row without waiting for GC. Linux `POST /v1/gc` (or `homesync-gc`) hard-purges eligible tombstones + unreferenced managed blobs/thumbs; delta `purged[]` removes leftover phone mirrors.
 
 Provenance rows explain *why* it still exists (“imported from WhatsApp backup on nixos”).
 

@@ -48,6 +48,27 @@ class CatalogRepository {
         .go();
   }
 
+  Future<String?> getPurgeCursor() async {
+    final row = await (_db.select(_db.syncMetaEntries)
+          ..where((t) => t.key.equals(_purgeCursorKey)))
+        .getSingleOrNull();
+    return row?.value;
+  }
+
+  Future<void> setPurgeCursor(String cursor) async {
+    await _db
+        .into(_db.syncMetaEntries)
+        .insertOnConflictUpdate(
+          SyncMetaEntriesCompanion.insert(key: _purgeCursorKey, value: cursor),
+        );
+  }
+
+  Future<void> clearPurgeCursor() async {
+    await (_db.delete(_db.syncMetaEntries)
+          ..where((t) => t.key.equals(_purgeCursorKey)))
+        .go();
+  }
+
   /// Drop local availability rows for a device (after reclaim / reset).
   Future<void> clearAvailabilityForDevice(String deviceId) async {
     await (_db.delete(_db.catalogAvailability)
@@ -199,13 +220,79 @@ class CatalogRepository {
               ),
             );
       }
+
+      for (final purge in delta.purged) {
+        await _hardDeleteLocalFile(purge.fileId);
+      }
+      if (delta.nextPurgeCursor.isNotEmpty) {
+        await _db
+            .into(_db.syncMetaEntries)
+            .insertOnConflictUpdate(
+              SyncMetaEntriesCompanion.insert(
+                key: _purgeCursorKey,
+                value: delta.nextPurgeCursor,
+              ),
+            );
+      }
     });
     _log.info(
       'catalog',
       'applyDelta files=${delta.files.length} tags=${delta.tags.length} '
       'paths=${delta.paths.length} availability=${delta.availability.length} '
+      'purged=${delta.purged.length} '
       'cursor=${delta.nextCursor.isEmpty ? "(unchanged)" : delta.nextCursor}',
     );
+  }
+
+  /// Hard-delete a local catalog row and related mirrors (no server call).
+  ///
+  /// Local pin/CAS bytes are removed only when **Bound to server** (same as
+  /// soft-delete tombstones). Unbound leftovers keep their on-device files.
+  Future<void> forgetLocalFile(String fileId) async {
+    await _hardDeleteLocalFile(fileId);
+    _log.info('catalog', 'forgot local file $fileId');
+  }
+
+  /// Drop every soft-deleted local catalog row (Removed from PC list).
+  Future<int> forgetAllTombstones() async {
+    final rows = await (_db.select(_db.catalogFiles)
+          ..where((f) => f.deletedAt.isNotNull()))
+        .get();
+    for (final row in rows) {
+      await _hardDeleteLocalFile(row.fileId);
+    }
+    _log.info('catalog', 'forgot ${rows.length} local tombstones');
+    return rows.length;
+  }
+
+  Future<void> _hardDeleteLocalFile(String fileId) async {
+    final row = await (_db.select(_db.catalogFiles)
+          ..where((f) => f.fileId.equals(fileId)))
+        .getSingleOrNull();
+    final bound = await _isBoundToServer(fileId);
+    if (row != null) {
+      if (bound) {
+        await clearPinLocalPath(fileId);
+        await _deleteBlobIfUnreferenced(
+          algo: row.hashAlgo,
+          contentHash: row.contentHash,
+          exceptFileId: fileId,
+        );
+      } else {
+        // Drop mapping only — leave custom pin path / CAS bytes on disk.
+        await clearPinLocalPath(fileId, deleteFile: false);
+      }
+    }
+    await clearBoundToServer(fileId);
+    await (_db.delete(_db.catalogFileTags)..where((t) => t.fileId.equals(fileId)))
+        .go();
+    await (_db.delete(_db.catalogPaths)..where((t) => t.fileId.equals(fileId)))
+        .go();
+    await (_db.delete(_db.catalogAvailability)
+          ..where((t) => t.fileId.equals(fileId)))
+        .go();
+    await (_db.delete(_db.catalogFiles)..where((t) => t.fileId.equals(fileId)))
+        .go();
   }
 
   Future<void> upsertAvailability({
@@ -537,4 +624,5 @@ class CatalogRepository {
   }
 
   static const _deltaCursorKey = 'delta_cursor';
+  static const _purgeCursorKey = 'purge_cursor';
 }

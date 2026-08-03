@@ -148,6 +148,30 @@ class AvailabilityPutIn(BaseModel):
     base_updated_at: str | None = None
 
 
+class GcPurgeOut(BaseModel):
+    file_id: str
+    purged_at: str
+
+
+class GcRunIn(BaseModel):
+    dry_run: bool = False
+    purge_tombstones: bool = True
+    purge_blobs: bool = True
+    purge_uploads: bool = True
+    min_age_seconds: int = Field(default=0, ge=0)
+    file_ids: list[str] | None = None
+
+
+class GcRunOut(BaseModel):
+    dry_run: bool
+    purged_file_ids: list[str] = Field(default_factory=list)
+    skipped_open_conflict_ids: list[str] = Field(default_factory=list)
+    deleted_blobs: list[str] = Field(default_factory=list)
+    deleted_thumbs: list[str] = Field(default_factory=list)
+    deleted_uploads: int = 0
+    bytes_reclaimed: int = 0
+
+
 class CatalogDeltaOut(BaseModel):
     next_cursor: str
     files: list[FileOut]
@@ -155,6 +179,8 @@ class CatalogDeltaOut(BaseModel):
     file_tags: list[FileTagOut]
     paths: list[FilePathOut]
     availability: list[AvailabilityOut] = Field(default_factory=list)
+    purged: list[GcPurgeOut] = Field(default_factory=list)
+    next_purge_cursor: str = ""
 
 
 class DeviceIn(BaseModel):

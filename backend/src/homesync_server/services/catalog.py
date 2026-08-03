@@ -17,9 +17,11 @@ from homesync_server.schemas.catalog import (
     FileTagOut,
     FileVersionOut,
     FileVersionsOut,
+    GcPurgeOut,
     TagOut,
 )
 from homesync_server.services import blobs as blob_svc
+from homesync_server.services import gc as gc_svc
 from homesync_server.util import new_uuid, next_updated_at, utc_now_iso
 
 _CURSOR_PREFIX = "v1:"
@@ -566,6 +568,7 @@ def catalog_delta(
     session: Session,
     *,
     since: str | None = None,
+    purge_since: str | None = None,
     limit: int = 500,
 ) -> CatalogDeltaOut:
     if limit < 1 or limit > 5000:
@@ -590,6 +593,13 @@ def catalog_delta(
         ).all()
     )
 
+    purge_rows, next_purge_cursor = gc_svc.list_purges_since(
+        session, purge_since=purge_since, limit=limit
+    )
+    purged_out = [
+        GcPurgeOut(file_id=row.file_id, purged_at=row.purged_at) for row in purge_rows
+    ]
+
     if not files:
         # Caught up: echo cursor so clients can poll; empty string means "start".
         next_cursor = cursor.encode() if cursor is not None else ""
@@ -600,6 +610,8 @@ def catalog_delta(
             file_tags=[],
             paths=[],
             availability=[],
+            purged=purged_out,
+            next_purge_cursor=next_purge_cursor,
         )
 
     file_ids = [f.file_id for f in files]
@@ -632,4 +644,6 @@ def catalog_delta(
         file_tags=[FileTagOut(file_id=ft.file_id, tag_id=ft.tag_id) for ft in file_tag_rows],
         paths=[path_to_out(p) for p in paths],
         availability=[avail_svc.availability_to_out(a) for a in avail_rows],
+        purged=purged_out,
+        next_purge_cursor=next_purge_cursor,
     )

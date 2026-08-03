@@ -13,6 +13,7 @@ from homesync_server.config import data_root
 from homesync_server.db import bootstrap, session_scope
 from homesync_server.indexer import ensure_library_root, index_all_roots
 from homesync_server.models import File, FilePath
+from homesync_server.services import gc as gc_svc
 
 
 def main_index(argv: list[str] | None = None) -> int:
@@ -86,3 +87,98 @@ def main_index(argv: list[str] | None = None) -> int:
 
 def run_index() -> None:
     sys.exit(main_index())
+
+
+def main_gc(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="homesync-gc",
+        description=(
+            "Hard-purge soft-deleted catalog rows and unreferenced managed blobs/thumbs."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be deleted without writing.",
+    )
+    parser.add_argument(
+        "--min-age",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Only purge tombstones with deleted_at at least this old (default 0).",
+    )
+    parser.add_argument(
+        "--file-id",
+        action="append",
+        default=[],
+        dest="file_ids",
+        help="Limit tombstone purge to these file_ids (repeatable).",
+    )
+    parser.add_argument(
+        "--no-tombstones",
+        action="store_true",
+        help="Skip hard-purging soft-deleted catalog rows.",
+    )
+    parser.add_argument(
+        "--no-blobs",
+        action="store_true",
+        help="Skip unreferenced managed blob/thumb deletion.",
+    )
+    parser.add_argument(
+        "--no-uploads",
+        action="store_true",
+        help="Skip expired upload partial cleanup.",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Debug logging.",
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    root = data_root()
+    _, engine = bootstrap(root)
+    logging.info("data root: %s", root)
+
+    with session_scope(engine) as session:
+        result = gc_svc.run_gc(
+            session,
+            root,
+            dry_run=args.dry_run,
+            purge_tombstones=not args.no_tombstones,
+            purge_blobs=not args.no_blobs,
+            purge_uploads=not args.no_uploads,
+            min_age_seconds=args.min_age,
+            file_ids=args.file_ids or None,
+        )
+
+    prefix = "would purge" if result.dry_run else "purged"
+    logging.info(
+        "%s files=%d blobs=%d thumbs=%d uploads=%d bytes=%d skipped_conflicts=%d",
+        prefix,
+        len(result.purged_file_ids),
+        len(result.deleted_blobs),
+        len(result.deleted_thumbs),
+        result.deleted_uploads,
+        result.bytes_reclaimed,
+        len(result.skipped_open_conflict_ids),
+    )
+    if result.purged_file_ids:
+        logging.info("file_ids: %s", ", ".join(result.purged_file_ids))
+    if result.skipped_open_conflict_ids:
+        logging.info(
+            "skipped open kdbx conflicts: %s",
+            ", ".join(result.skipped_open_conflict_ids),
+        )
+    return 0
+
+
+def run_gc() -> None:
+    sys.exit(main_gc())

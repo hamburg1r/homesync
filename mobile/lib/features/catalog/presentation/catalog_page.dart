@@ -119,6 +119,10 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
               context.read<CatalogCubit>().removeFromDevice(file.fileId),
           onDeleteFromPc: (file) =>
               context.read<CatalogCubit>().deleteFromPc(file.fileId),
+          onForgetLocal: (file) =>
+              context.read<CatalogCubit>().forgetLocalFile(file.fileId),
+          onClearRemoved: () =>
+              context.read<CatalogCubit>().forgetAllTombstones(),
           onBoundToServer: (file, bound) => context
               .read<CatalogCubit>()
               .setBoundToServer(file.fileId, bound: bound),

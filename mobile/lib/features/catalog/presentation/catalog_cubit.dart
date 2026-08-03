@@ -554,6 +554,57 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
   }
 
+  /// Drop a local tombstone / leftover catalog row without a server call.
+  Future<String?> forgetLocalFile(String fileId) async {
+    emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
+    try {
+      await repository.forgetLocalFile(fileId);
+      _catalogFiles = await repository.listActiveFiles();
+      if (!isClosed) {
+        emit(state.copyWith(clearBusyFileId: true));
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'forget local failed: $e');
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            clearBusyFileId: true,
+            statusMessage: e.toString(),
+          ),
+        );
+      }
+      return e.toString();
+    }
+  }
+
+  /// Clear all local Removed-from-PC rows (phone-only).
+  Future<String?> forgetAllTombstones() async {
+    emit(state.copyWith(clearStatusMessage: true));
+    try {
+      final n = await repository.forgetAllTombstones();
+      _catalogFiles = await repository.listActiveFiles();
+      if (!isClosed) {
+        emit(
+          state.copyWith(
+            statusMessage: n == 0
+                ? 'No removed items to clear'
+                : 'Forgot $n removed item${n == 1 ? '' : 's'}',
+          ),
+        );
+      }
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'forget all tombstones failed: $e');
+      if (!isClosed) {
+        emit(state.copyWith(statusMessage: e.toString()));
+      }
+      return e.toString();
+    }
+  }
+
   /// Toggle "bound to server": PC tombstone also deletes local pin bytes.
   Future<String?> setBoundToServer(String fileId, {required bool bound}) async {
     if (fileId.startsWith('local:')) {

@@ -182,3 +182,12 @@ class Availability(Base):
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
 
     file: Mapped[File] = relationship(back_populates="availability_rows")
+
+
+class GcPurge(Base):
+    """Hard-purged ``file_id`` log for phone leftover cleanup after GC."""
+
+    __tablename__ = "gc_purges"
+
+    file_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    purged_at: Mapped[str] = mapped_column(Text, nullable=False)

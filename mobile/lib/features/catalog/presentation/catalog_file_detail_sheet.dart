@@ -10,6 +10,7 @@ class CatalogFileDetailSheet extends StatefulWidget {
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
+    this.onForgetLocal,
     this.onBoundToServer,
     this.onOpen,
     this.localPathFuture,
@@ -21,6 +22,7 @@ class CatalogFileDetailSheet extends StatefulWidget {
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file)? onForgetLocal;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?>? localPathFuture;
@@ -48,7 +50,7 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
         content: Text(
           'Soft-delete “${widget.file.displayName}” on the server. '
           'It leaves the main catalog and appears under Removed from PC. '
-          'Blob GC is not run yet.',
+          'Run GC on the PC later to hard-purge and free blob space.',
         ),
         actions: [
           TextButton(
@@ -64,6 +66,37 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
     );
     if (ok != true || !context.mounted) return;
     final err = await widget.onDeleteFromPc!(widget.file);
+    if (context.mounted) {
+      Navigator.pop(context);
+      if (err != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      }
+    }
+  }
+
+  Future<void> _confirmForget(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Forget on this phone?'),
+        content: Text(
+          'Remove “${widget.file.displayName}” from the local Removed list. '
+          'Does not change the PC catalog. Sync after PC GC also clears these.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Forget'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final err = await widget.onForgetLocal!(widget.file);
     if (context.mounted) {
       Navigator.pop(context);
       if (err != null) {
@@ -302,6 +335,12 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
                       icon: const Icon(Icons.phonelink_erase_outlined),
                       label: const Text('Remove from device'),
                     ),
+                  if (file.isDeleted && widget.onForgetLocal != null)
+                    OutlinedButton.icon(
+                      onPressed: busy ? null : () => _confirmForget(context),
+                      icon: const Icon(Icons.visibility_off_outlined),
+                      label: const Text('Forget on phone'),
+                    ),
                   if (canDeleteFromPc)
                     OutlinedButton.icon(
                       onPressed: busy ? null : () => _confirmDelete(context),
@@ -316,11 +355,13 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
                         ),
                       ),
                     ),
-                  if (file.isDeleted && !file.hasLocalBytes)
+                  if (file.isDeleted && !file.hasLocalBytes && widget.onForgetLocal == null)
                     TextButton(
                       onPressed: () => Navigator.pop(context),
                       child: const Text('Removed from PC — metadata only'),
                     )
+                  else if (file.isDeleted && !file.hasLocalBytes)
+                    const SizedBox.shrink()
                   else if (file.isUploadPending)
                     TextButton(
                       onPressed: () => Navigator.pop(context),

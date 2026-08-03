@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 homesync-server = "homesync_server.main:run"
 homesync-index = "homesync_server.cli:run_index"
+homesync-gc = "homesync_server.cli:run_gc"
 homesync-migrate-data = "homesync_server.migrate_data:run_migrate"
 
 [build-system]

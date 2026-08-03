@@ -13,6 +13,7 @@ class CatalogFileTile extends StatelessWidget {
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
+    this.onForgetLocal,
     this.onBoundToServer,
     this.onOpen,
     this.onResolveLocalPath,
@@ -25,6 +26,7 @@ class CatalogFileTile extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file)? onForgetLocal;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
@@ -83,6 +85,7 @@ class CatalogFileTile extends StatelessWidget {
             onPin: onPin,
             onUnpin: onUnpin,
             onDeleteFromPc: onDeleteFromPc,
+            onForgetLocal: onForgetLocal,
             onBoundToServer: onBoundToServer,
             onOpen: onOpen,
             localPathFuture: onResolveLocalPath?.call(file),

@@ -210,6 +210,17 @@ If you need stronger tracking than mode:
 
 `pinned` + `missing` = degraded pin (UI should offer re-fetch).
 
+### `gc_purges` (hard-delete log)
+
+Soft-deleted rows (`files.deleted_at`) stay in the catalog until **GC** hard-purges them. Each hard purge appends a row so phones can drop leftover tombstone mirrors (Removed from PC) without a full catalog reset.
+
+| Column | Type | Notes |
+|---|---|---|
+| `file_id` | UUID PK | Logical file that was hard-deleted |
+| `purged_at` | DATETIME | When GC removed it |
+
+Implemented in schema migration `007_gc_purges.sql`. Catalog delta returns `purged[]` / `next_purge_cursor` for clients that pass `purge_since`. Managed blobs/thumbs are unlinked only when no remaining file head, `versions`, or kdbx conflict candidate references the hash. Hash-in-place library roots are never unlinked by GC.
+
 ## Identity rules
 
 ```mermaid

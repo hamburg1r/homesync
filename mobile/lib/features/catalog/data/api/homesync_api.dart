@@ -172,12 +172,16 @@ class HomesyncApi {
 
   Future<CatalogDelta> catalogDelta({
     String? since,
+    String? purgeSince,
     int limit = 500,
   }) async {
     refreshBaseUrlFromSettings();
     final query = <String, String>{'limit': '$limit'};
     if (since != null && since.isNotEmpty) {
       query['since'] = since;
+    }
+    if (purgeSince != null && purgeSince.isNotEmpty) {
+      query['purge_since'] = purgeSince;
     }
     final response = await _send(
       'GET /v1/catalog/delta',
@@ -800,7 +804,7 @@ class HomesyncApi {
     );
   }
 
-  /// Soft-delete on the PC catalog (sets `deleted_at`; blob GC deferred).
+  /// Soft-delete on the PC catalog (sets `deleted_at`; hard-purge via GC).
   Future<CatalogFile> deleteFile(String fileId) async {
     refreshBaseUrlFromSettings();
     final response = await _send(

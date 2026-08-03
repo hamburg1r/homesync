@@ -31,6 +31,8 @@ class CatalogBrowseView extends StatelessWidget {
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
+    this.onForgetLocal,
+    this.onClearRemoved,
     this.onBoundToServer,
     this.onOpen,
     this.onResolveLocalPath,
@@ -59,6 +61,8 @@ class CatalogBrowseView extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file)? onForgetLocal;
+  final Future<String?> Function()? onClearRemoved;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
@@ -93,6 +97,37 @@ class CatalogBrowseView extends StatelessWidget {
       appBar: AppBar(
         title: Text(_title),
         actions: [
+          if (browseMode == BrowseMode.removedFromPc &&
+              onClearRemoved != null &&
+              files.isNotEmpty)
+            IconButton(
+              tooltip: 'Clear removed list',
+              onPressed: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Clear removed list?'),
+                    content: const Text(
+                      'Forget all soft-deleted catalog rows on this phone. '
+                      'Does not run PC garbage collection. A full re-sync may '
+                      'bring back rows still soft-deleted on the server.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Clear'),
+                      ),
+                    ],
+                  ),
+                );
+                if (ok == true) await onClearRemoved!();
+              },
+              icon: const Icon(Icons.delete_sweep_outlined),
+            ),
           if (onOpenSettings != null)
             IconButton(
               tooltip: 'Server settings',
@@ -149,23 +184,26 @@ class CatalogBrowseView extends StatelessWidget {
                 ),
               ],
             ),
-          Expanded(child: _CatalogBrowseBody(
-            state: state,
-            files: files,
-            statusMessage: statusMessage,
-            busyFileId: busyFileId,
-            browseMode: browseMode,
-            onRefresh: onRefresh,
-            onOpenSettings: onOpenSettings,
-            onPin: onPin,
-            onUnpin: onUnpin,
-            onDeleteFromPc: onDeleteFromPc,
-            onBoundToServer: onBoundToServer,
-            onOpen: onOpen,
-            onResolveLocalPath: onResolveLocalPath,
-            onCatalogRelativePath: onCatalogRelativePath,
-            onLoadThumb: onLoadThumb,
-          )),
+          Expanded(
+            child: _CatalogBrowseBody(
+              state: state,
+              files: files,
+              statusMessage: statusMessage,
+              busyFileId: busyFileId,
+              browseMode: browseMode,
+              onRefresh: onRefresh,
+              onOpenSettings: onOpenSettings,
+              onPin: onPin,
+              onUnpin: onUnpin,
+              onDeleteFromPc: onDeleteFromPc,
+              onForgetLocal: onForgetLocal,
+              onBoundToServer: onBoundToServer,
+              onOpen: onOpen,
+              onResolveLocalPath: onResolveLocalPath,
+              onCatalogRelativePath: onCatalogRelativePath,
+              onLoadThumb: onLoadThumb,
+            ),
+          ),
         ],
       ),
     );
@@ -184,6 +222,7 @@ class _CatalogBrowseBody extends StatelessWidget {
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
+    this.onForgetLocal,
     this.onBoundToServer,
     this.onOpen,
     this.onResolveLocalPath,
@@ -201,6 +240,7 @@ class _CatalogBrowseBody extends StatelessWidget {
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
+  final Future<String?> Function(CatalogFile file)? onForgetLocal;
   final Future<String?> Function(CatalogFile file, bool bound)? onBoundToServer;
   final Future<void> Function(CatalogFile file)? onOpen;
   final Future<String?> Function(CatalogFile file)? onResolveLocalPath;
@@ -263,6 +303,7 @@ class _CatalogBrowseBody extends StatelessWidget {
                 onPin: onPin,
                 onUnpin: onUnpin,
                 onDeleteFromPc: onDeleteFromPc,
+                onForgetLocal: onForgetLocal,
                 onBoundToServer: onBoundToServer,
                 onOpen: onOpen,
                 onResolveLocalPath: onResolveLocalPath,
