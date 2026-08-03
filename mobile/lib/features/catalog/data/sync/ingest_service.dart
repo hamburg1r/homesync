@@ -150,6 +150,7 @@ class IngestService {
     String? relativePath,
     String? replaceFileId,
     String? knownContentHash,
+    List<String> tags = const [],
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -200,6 +201,7 @@ class IngestService {
       relativePath: relativePath,
       sourcePath: source.path,
       replaceFileId: replaceFileId,
+      tags: tags,
     );
     await queue.enqueue(item);
     return item;
@@ -219,6 +221,7 @@ class IngestService {
     String? replaceFileId,
     String? previousContentHash,
     String? knownContentHash,
+    List<String> tags = const [],
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -231,6 +234,7 @@ class IngestService {
       relativePath: relativePath,
       replaceFileId: replaceFileId,
       knownContentHash: knownContentHash,
+      tags: tags,
       index: index,
       total: total,
       onProgress: onProgress,
@@ -288,21 +292,41 @@ class IngestService {
     required CatalogFile created,
     required AvailabilityInfo availability,
   }) async {
-    await repository.upsertFile(created);
+    var file = created;
+    await repository.upsertFile(file);
+    if (item.tags.isNotEmpty) {
+      file = await _applyTags(file, item.tags);
+    }
     await repository.upsertAvailability(
-      fileId: created.fileId,
+      fileId: file.fileId,
       deviceId: availability.deviceId,
       mode: AvailabilityMode.parse(availability.mode),
       updatedAt: availability.updatedAt,
     );
     await queue.remove(item.id);
-    final refreshed = await repository.getFile(created.fileId);
+    final refreshed = await repository.getFile(file.fileId);
     final onDevice = await blobs.has(item.hashAlgo, item.contentHash) ||
         (item.sourcePath != null && await File(item.sourcePath!).exists());
-    return (refreshed ?? created).copyWith(
+    return (refreshed ?? file).copyWith(
       availabilityMode: AvailabilityMode.pinned,
       hasLocalBytes: onDevice,
     );
+  }
+
+  Future<CatalogFile> _applyTags(CatalogFile file, List<String> ruleTags) async {
+    final merged = <String>{...file.tags, ...ruleTags}.toList()..sort();
+    if (merged.length == file.tags.length &&
+        merged.every(file.tags.contains)) {
+      return file;
+    }
+    try {
+      final updated = await api.putFileTags(fileId: file.fileId, tags: merged);
+      await repository.upsertFile(updated);
+      return updated;
+    } catch (e) {
+      log.warn('ingest', 'apply tags failed for ${file.fileId}: $e');
+      return file;
+    }
   }
 
   /// Flush any durable queue items (call on reconnect / catalog refresh).
@@ -393,7 +417,7 @@ class IngestService {
       ),
     );
 
-    late final CatalogFile created;
+    late CatalogFile created;
     try {
       created = item.replaceFileId != null
           ? await api.updateFileContent(
@@ -427,6 +451,10 @@ class IngestService {
     }
 
     await repository.upsertFile(created);
+
+    if (item.tags.isNotEmpty) {
+      created = await _applyTags(created, item.tags);
+    }
 
     final avail = await api.putAvailability(
       fileId: created.fileId,

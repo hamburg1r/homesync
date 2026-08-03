@@ -176,6 +176,7 @@ class HomesyncIngestTaskHandler extends TaskHandler {
         relativePath: item.relativePath,
         sourcePath: item.sourcePath,
         replaceFileId: item.replaceFileId,
+        tags: item.tags,
         createdAt: item.createdAt,
       );
     }
@@ -212,6 +213,7 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       relativePath: item.relativePath,
       sourcePath: item.sourcePath,
       replaceFileId: item.replaceFileId,
+      tags: item.tags,
       createdAt: item.createdAt,
     );
     // Persist digest before upload so a mid-transfer kill does not re-blake3.
@@ -564,6 +566,7 @@ class BackgroundIngestRunner {
           relativePath: job.relativePath,
           sourcePath: job.sourcePath,
           replaceFileId: job.replaceFileId,
+          tags: job.tags,
           createdAt: job.createdAt,
         );
       }
@@ -747,7 +750,7 @@ class BackgroundIngestRunner {
     if (rows.isEmpty) return const [];
     final rules =
         (await scanner.repository.listRules()).where((r) => r.enabled).toList();
-    final ruleNames = {for (final r in rules) r.id: r.name};
+    final byId = indexTrackingRules(rules);
     final now = DateTime.now().toUtc().toIso8601String();
     final out = <IngestQueueItem>[];
     for (final row in rows) {
@@ -758,6 +761,7 @@ class BackgroundIngestRunner {
           row.mtimeMs != null &&
           (await source.stat()).size == row.sizeBytes &&
           (await source.stat()).modified.millisecondsSinceEpoch == row.mtimeMs;
+      final meta = resolveTrackingIngestMeta(byId, row);
       out.add(
         IngestQueueItem(
           id: const Uuid().v4(),
@@ -766,10 +770,10 @@ class BackgroundIngestRunner {
           sizeBytes: row.sizeBytes,
           title: row.title,
           sourceKind: row.sourceKind,
-          relativePath:
-              'track/${ruleNames[row.ruleId] ?? 'misc'}/${row.title ?? p.basename(row.localPath)}',
+          relativePath: meta.relativePath,
           sourcePath: row.localPath,
           replaceFileId: row.fileId,
+          tags: meta.tags,
           createdAt: now,
         ),
       );

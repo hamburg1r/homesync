@@ -232,7 +232,8 @@ class CatalogCubit extends Cubit<CatalogState> {
           enabled: state.deviceAndSyncedOnly,
         );
       case BrowseMode.group:
-        final locals = await tracking.listLocalFiles(ruleId: state.groupRuleId);
+        final ids = await tracking.groupRuleIds(state.groupRuleId);
+        final locals = await tracking.listLocalFiles(ruleIds: ids);
         files = await _localsToCatalogFiles(locals);
       case BrowseMode.trackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listTracked());

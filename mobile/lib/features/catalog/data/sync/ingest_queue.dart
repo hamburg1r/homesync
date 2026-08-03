@@ -57,6 +57,7 @@ class IngestQueue {
     String? relativePath,
     String? sourcePath,
     String? replaceFileId,
+    List<String> tags = const [],
   }) {
     return IngestQueueItem(
       id: const Uuid().v4(),
@@ -69,6 +70,7 @@ class IngestQueue {
       relativePath: relativePath,
       sourcePath: sourcePath,
       replaceFileId: replaceFileId,
+      tags: List<String>.unmodifiable(tags),
       createdAt: DateTime.now().toUtc().toIso8601String(),
     );
   }
@@ -86,6 +88,7 @@ class IngestQueueItem {
     this.relativePath,
     this.sourcePath,
     this.replaceFileId,
+    this.tags = const [],
     required this.createdAt,
   });
 
@@ -101,7 +104,37 @@ class IngestQueueItem {
   final String? sourcePath;
   /// When set, upload replaces head via ``POST /files/{id}/content``.
   final String? replaceFileId;
+  /// Tags to union onto the catalog file after create/content.
+  final List<String> tags;
   final String createdAt;
+
+  IngestQueueItem copyWith({
+    String? contentHash,
+    String? hashAlgo,
+    int? sizeBytes,
+    String? mimeType,
+    String? title,
+    String? sourceKind,
+    String? relativePath,
+    String? sourcePath,
+    String? replaceFileId,
+    List<String>? tags,
+  }) {
+    return IngestQueueItem(
+      id: id,
+      contentHash: contentHash ?? this.contentHash,
+      hashAlgo: hashAlgo ?? this.hashAlgo,
+      sizeBytes: sizeBytes ?? this.sizeBytes,
+      mimeType: mimeType ?? this.mimeType,
+      title: title ?? this.title,
+      sourceKind: sourceKind ?? this.sourceKind,
+      relativePath: relativePath ?? this.relativePath,
+      sourcePath: sourcePath ?? this.sourcePath,
+      replaceFileId: replaceFileId ?? this.replaceFileId,
+      tags: tags ?? this.tags,
+      createdAt: createdAt,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -114,10 +147,19 @@ class IngestQueueItem {
         'relative_path': relativePath,
         'source_path': sourcePath,
         'replace_file_id': replaceFileId,
+        'tags': tags,
         'created_at': createdAt,
       };
 
   factory IngestQueueItem.fromJson(Map<String, dynamic> json) {
+    final rawTags = json['tags'];
+    final tags = <String>[];
+    if (rawTags is List) {
+      for (final e in rawTags) {
+        final s = '$e'.trim();
+        if (s.isNotEmpty) tags.add(s);
+      }
+    }
     return IngestQueueItem(
       id: json['id'] as String,
       contentHash: json['content_hash'] as String,
@@ -129,6 +171,7 @@ class IngestQueueItem {
       relativePath: json['relative_path'] as String?,
       sourcePath: json['source_path'] as String?,
       replaceFileId: json['replace_file_id'] as String?,
+      tags: tags,
       createdAt: json['created_at'] as String,
     );
   }

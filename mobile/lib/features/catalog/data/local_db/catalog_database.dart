@@ -33,7 +33,7 @@ class CatalogDatabase extends _$CatalogDatabase {
   static const dbName = 'homesync_catalog_v2';
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -59,6 +59,11 @@ class CatalogDatabase extends _$CatalogDatabase {
           }
           if (from < 7) {
             await m.addColumn(localTrackedFiles, localTrackedFiles.mtimeMs);
+          }
+          if (from < 8) {
+            await m.addColumn(trackingRules, trackingRules.parentId);
+            await m.addColumn(trackingRules, trackingRules.tagsJson);
+            await m.addColumn(trackingRules, trackingRules.sourceKind);
           }
         },
       );

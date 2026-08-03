@@ -133,14 +133,15 @@ flowchart LR
 
 ## Milestone 9 — KeePass conflicts (done)
 
-**Outcome:** Divergent `.kdbx` uploads keep both hashes; trivial semantic diffs auto-resolve; real diffs open a multi-candidate outbox; phone uploads resolved `AB`.
+**Outcome:** Divergent `.kdbx` uploads keep both hashes; trivial semantic diffs auto-resolve; non-deletion real diffs (adds / moves / field edits) auto-merge with LWW by entry `mtime`; true entry UUID removals open a multi-candidate outbox; phone uploads resolved `AB`.
 
 - [x] Port semantic diff + `pykeepass` via uv
 - [x] `kdbx_conflicts` / candidates migration; local secrets file; `PUT …/kdbx-secret`
 - [x] kdbx-aware `POST …/content` (202 outbox) + resolve API
 - [x] Phone outbox UI + scenario tests
+- [x] UUID-aware move detection; daemon auto-merge (union + LWW) when incoming drops no entry UUIDs
 
-**Exit check:** Trivial rewrite auto-promotes head with no open conflict; real password-field conflict returns 202; resolve sets single head and closes outbox.
+**Exit check:** Trivial rewrite auto-promotes head with no open conflict; add/move/LWW edit auto-merges; deletion returns 202; resolve sets single head and closes outbox.
 
 **E2E:** `backend/tests/scenarios/test_kdbx_conflicts.py`. Flutter: `mobile/test/scenarios/kdbx_conflicts_test.dart`.
 
@@ -228,5 +229,7 @@ Record important choices here as they happen.
 | 2026-08-03 | FG task: HTTP-only jobs; main owns Drift/queue | Dual-isolate DI/Drift caused `flush failed` |
 | 2026-08-03 | Milestone 8: head+history versions under stable `file_id`; not file↔file links | Path is local binding only; history starts at first observation; `POST …/content` archives old head |
 | 2026-08-03 | Milestone 9: kdbx conflict outbox; daemon secret for trivial semantic auto-diff; collision = bound `file_id` only | Phone interactive resolve for real entry diffs; Bound-to-server unrelated |
+| 2026-08-03 | kdbx auto-merge: union + LWW by entry mtime when incoming drops no UUIDs; moves OK; true deletions → outbox | Was outbox for any real field/entry diff |
+| 2026-08-03 | Tracking: folder include-regex children + tags/source_kind; preserve relative_path under folder | Exclude children later; no new tracker kind |
 | 2026-08-03 | Manual GC: `POST /v1/gc` + `homesync-gc`; `gc_purges` + delta `purged[]` | Soft-delete until explicit hard-purge; phone Forget for leftover Removed rows |
 | 2026-08-03 | Phone tag edit via PUT `/files/{id}/tags` + chip UI in detail sheet | Display/search already existed; write path was missing; browse-by-tag Later |

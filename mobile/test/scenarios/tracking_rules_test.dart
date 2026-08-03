@@ -214,6 +214,185 @@ void main() {
       );
     });
 
+    test('folder tracks nested subdirs and preserves relative_path', () async {
+      final relativePaths = <String>[];
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            relativePaths.add(body['relative_path'] as String);
+            return http.Response(
+              '''
+{
+  "file_id": "nest-1",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'nest-1', mode: 'pinned');
+          }
+          if (request.method == 'GET' &&
+              request.url.path.contains('/catalog/delta')) {
+            return http.Response(
+              '{"next_cursor":"","files":[],"tags":[],"file_tags":[],"paths":[],"availability":[]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/WA')
+        ..createSync(recursive: true);
+      await File('${folder.path}/Media/foo/bar.jpg')
+          .create(recursive: true)
+          .then((f) => f.writeAsBytes(Uint8List.fromList([9, 9, 9])));
+
+      await harness.tracking.addRule(
+        name: 'whatsapp',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+      );
+
+      final result = await harness.scanner.scanAndIngest();
+      expect(result.tracked, 1);
+      expect(result.ingested, 1);
+      expect(relativePaths, ['track/whatsapp/Media/foo/bar.jpg']);
+    });
+
+    test('folder include-regex child filters; tags union applied', () async {
+      final relativePaths = <String>[];
+      final tagPuts = <List<String>>[];
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            relativePaths.add(body['relative_path'] as String? ?? '');
+            return http.Response(
+              '''
+{
+  "file_id": "jpg-1",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/tags')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            final tags = (body['tags'] as List<dynamic>).map((e) => '$e').toList()
+              ..sort();
+            tagPuts.add(tags);
+            return http.Response(
+              '''
+{
+  "file_id": "jpg-1",
+  "content_hash": "deadbeef",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": 1,
+  "title": "a.jpg",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": ${jsonEncode(tags)}
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'jpg-1', mode: 'pinned');
+          }
+          if (request.method == 'GET' &&
+              request.url.path.contains('/catalog/delta')) {
+            return http.Response(
+              '{"next_cursor":"","files":[],"tags":[],"file_tags":[],"paths":[],"availability":[]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response('unexpected ${request.method} ${request.url}', 500);
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/Pics')
+        ..createSync(recursive: true);
+      await File('${folder.path}/a.jpg').writeAsBytes(Uint8List.fromList([1]));
+      await File('${folder.path}/b.txt').writeAsString('skip');
+
+      final parent = await harness.tracking.addRule(
+        name: 'pics',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+        tags: const ['album'],
+        sourceKind: 'misc',
+      );
+      await harness.tracking.addRule(
+        name: 'pics',
+        kind: TrackingRuleKind.regex,
+        patternOrUri: '*.jpg',
+        parentId: parent.id,
+        tags: const ['photo'],
+      );
+
+      final result = await harness.scanner.scanAndIngest();
+      expect(result.tracked, 1);
+      expect(result.ingested, 1);
+      expect(relativePaths, ['track/pics/a.jpg']);
+      expect(tagPuts, isNotEmpty);
+      expect(tagPuts.first, ['album', 'photo']);
+
+      final untracked = await harness.tracking.listUntracked();
+      expect(untracked.any((f) => f.title == 'b.txt'), isTrue);
+    });
+
     test('file rule ingests only the selected path', () async {
       var creates = 0;
       harness = await TestCatalogHarness.open(
@@ -410,7 +589,6 @@ void main() {
     test('failed ingest with unchanged mtime reuses digest (no rehash gate)',
         () async {
       var creates = 0;
-      var putBlobs = 0;
       harness = await TestCatalogHarness.open(
         MockClient((request) async {
           if (request.method == 'POST' &&
@@ -427,7 +605,6 @@ void main() {
           }
           final upload = mockBlobUploadResponse(request);
           if (upload != null) {
-            putBlobs += 1;
             return upload;
           }
           if (request.method == 'POST' &&

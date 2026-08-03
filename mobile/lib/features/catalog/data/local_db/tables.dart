@@ -88,6 +88,12 @@ class TrackingRules extends Table {
   TextColumn get patternOrUri => text()();
   BoolColumn get enabled => boolean().withDefault(const Constant(true))();
   TextColumn get createdAt => text()();
+  /// Parent folder rule id; only set for include-regex children of a folder.
+  TextColumn get parentId => text().nullable()();
+  /// JSON array of tag names applied on ingest (`[]` when empty).
+  TextColumn get tagsJson => text().withDefault(const Constant('[]'))();
+  /// Optional `source_kind` override; null keeps path heuristic.
+  TextColumn get sourceKind => text().nullable()();
 
   @override
   Set<Column<Object>> get primaryKey => {id};

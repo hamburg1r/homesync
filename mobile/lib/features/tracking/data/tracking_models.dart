@@ -1,3 +1,7 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+
 /// Browse modes for the catalog main list (drawer-driven).
 enum BrowseMode {
   allCatalog,
@@ -34,6 +38,10 @@ class TrackingRule {
     required this.patternOrUri,
     required this.enabled,
     required this.createdAt,
+    this.parentId,
+    this.tags = const [],
+    this.sourceKind,
+    this.children = const [],
   });
 
   final String id;
@@ -42,16 +50,82 @@ class TrackingRule {
   final String patternOrUri;
   final bool enabled;
   final String createdAt;
+  /// Set when this is an include-regex under a [TrackingRuleKind.folder] parent.
+  final String? parentId;
+  final List<String> tags;
+  /// Optional ingest `source_kind`; null ⇒ path heuristic.
+  final String? sourceKind;
+  /// Include-regex children (folder parents only; empty for others).
+  final List<TrackingRule> children;
+
+  bool get isChild => parentId != null;
 
   String get summary {
     switch (kind) {
       case TrackingRuleKind.folder:
       case TrackingRuleKind.file:
-        return patternOrUri;
       case TrackingRuleKind.regex:
         return patternOrUri;
     }
   }
+
+  TrackingRule copyWith({
+    String? id,
+    String? name,
+    TrackingRuleKind? kind,
+    String? patternOrUri,
+    bool? enabled,
+    String? createdAt,
+    String? parentId,
+    List<String>? tags,
+    String? sourceKind,
+    List<TrackingRule>? children,
+    bool clearParentId = false,
+    bool clearSourceKind = false,
+  }) {
+    return TrackingRule(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      kind: kind ?? this.kind,
+      patternOrUri: patternOrUri ?? this.patternOrUri,
+      enabled: enabled ?? this.enabled,
+      createdAt: createdAt ?? this.createdAt,
+      parentId: clearParentId ? null : (parentId ?? this.parentId),
+      tags: tags ?? this.tags,
+      sourceKind: clearSourceKind ? null : (sourceKind ?? this.sourceKind),
+      children: children ?? this.children,
+    );
+  }
+}
+
+/// Result of matching a local path against tracking rules.
+class TrackingRuleMatch {
+  const TrackingRuleMatch({
+    required this.rule,
+    this.folderParent,
+    this.folderRoot,
+  });
+
+  /// Most specific rule (child include-regex, or the top-level rule).
+  final TrackingRule rule;
+  /// Folder parent when [rule] is a child include-regex.
+  final TrackingRule? folderParent;
+  /// Absolute folder root when matched under a folder rule.
+  final String? folderRoot;
+
+  String get displayName => folderParent?.name ?? rule.name;
+
+  List<String> get effectiveTags {
+    final out = <String>{};
+    if (folderParent != null) {
+      out.addAll(folderParent!.tags);
+    }
+    out.addAll(rule.tags);
+    return out.toList()..sort();
+  }
+
+  String? get sourceKindOverride =>
+      rule.sourceKind ?? folderParent?.sourceKind;
 }
 
 enum IngestStatus { pending, synced, failed, untracked }
@@ -105,4 +179,77 @@ class LocalTrackedFile {
   bool get isTracked => ruleId != null;
   bool get isSynced =>
       ingestStatus == IngestStatus.synced && fileId != null;
+}
+
+/// Flat id → rule map including folder children.
+Map<String, TrackingRule> indexTrackingRules(Iterable<TrackingRule> forest) {
+  final out = <String, TrackingRule>{};
+  for (final r in forest) {
+    out[r.id] = r;
+    for (final c in r.children) {
+      out[c.id] = c;
+    }
+  }
+  return out;
+}
+
+class TrackingIngestMeta {
+  const TrackingIngestMeta({
+    required this.relativePath,
+    required this.tags,
+  });
+
+  final String relativePath;
+  final List<String> tags;
+}
+
+/// Build catalog `relative_path` + effective tags for a tracked local row.
+TrackingIngestMeta resolveTrackingIngestMeta(
+  Map<String, TrackingRule> byId,
+  LocalTrackedFile row,
+) {
+  final ruleId = row.ruleId;
+  final rule = ruleId == null ? null : byId[ruleId];
+  final parent = rule?.parentId == null ? null : byId[rule!.parentId!];
+  final folder = rule?.kind == TrackingRuleKind.folder
+      ? rule
+      : (parent?.kind == TrackingRuleKind.folder ? parent : null);
+  final displayName = folder?.name ?? rule?.name ?? 'misc';
+  final tags = <String>{
+    ...?folder?.tags,
+    ...?rule?.tags,
+  }.toList()
+    ..sort();
+
+  final folderRoot = folder?.patternOrUri;
+  final relativePath = buildTrackRelativePath(
+    ruleName: displayName,
+    localPath: row.localPath,
+    folderRoot: folderRoot,
+  );
+  return TrackingIngestMeta(relativePath: relativePath, tags: tags);
+}
+
+/// `track/<ruleName>/<basename>` or `track/<ruleName>/<rel under folder>`.
+String buildTrackRelativePath({
+  required String ruleName,
+  required String localPath,
+  String? folderRoot,
+}) {
+  final name = ruleName.trim().isEmpty ? 'misc' : ruleName.trim();
+  if (folderRoot != null && folderRoot.trim().isNotEmpty) {
+    final root = p.normalize(folderRoot);
+    final norm = p.normalize(localPath);
+    final String rel;
+    if (norm == root) {
+      rel = p.basename(norm);
+    } else if (norm.startsWith('$root/') ||
+        norm.startsWith('$root${Platform.pathSeparator}')) {
+      rel = p.relative(norm, from: root).replaceAll('\\', '/');
+    } else {
+      rel = p.basename(norm);
+    }
+    return 'track/$name/$rel';
+  }
+  return 'track/$name/${p.basename(localPath)}';
 }

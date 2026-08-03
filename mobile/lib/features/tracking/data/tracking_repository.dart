@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:drift/drift.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_database.dart';
@@ -13,18 +15,34 @@ class TrackingRepository {
   final CatalogDatabase _db;
   final AppLog _log;
 
+  /// Top-level rules with include-regex [TrackingRule.children] attached.
   Future<List<TrackingRule>> listRules() async {
     final rows = await (_db.select(_db.trackingRules)
           ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]))
         .get();
-    return rows.map(_ruleFromRow).toList();
+    return _forestFromRows(rows);
   }
 
   Stream<List<TrackingRule>> watchRules() {
     return (_db.select(_db.trackingRules)
           ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]))
         .watch()
-        .map((rows) => rows.map(_ruleFromRow).toList());
+        .map(_forestFromRows);
+  }
+
+  /// Flat list of every rule row (parents and children).
+  Future<List<TrackingRule>> listRulesFlat() async {
+    final rows = await (_db.select(_db.trackingRules)
+          ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]))
+        .get();
+    return rows.map(_ruleFromRow).toList();
+  }
+
+  Future<TrackingRule?> getRule(String id) async {
+    final row = await (_db.select(_db.trackingRules)
+          ..where((t) => t.id.equals(id)))
+        .getSingleOrNull();
+    return row == null ? null : _ruleFromRow(row);
   }
 
   Future<TrackingRule> addRule({
@@ -32,13 +50,38 @@ class TrackingRepository {
     required TrackingRuleKind kind,
     required String patternOrUri,
     bool enabled = true,
+    String? parentId,
+    List<String> tags = const [],
+    String? sourceKind,
   }) async {
     final id = const Uuid().v4();
     final now = DateTime.now().toUtc().toIso8601String();
     final resolvedName = normalizeRuleName(name);
-    if (kind == TrackingRuleKind.regex) {
-      TrackingPattern.compile(patternOrUri); // validate early
+    final cleanedTags = normalizeTagList(tags);
+    final cleanedSource = _normalizeSourceKind(sourceKind);
+
+    if (parentId != null) {
+      if (kind != TrackingRuleKind.regex) {
+        throw ArgumentError('child rules must be regex');
+      }
+      final parent = await getRule(parentId);
+      if (parent == null) {
+        throw ArgumentError('parent rule not found: $parentId');
+      }
+      if (parent.kind != TrackingRuleKind.folder) {
+        throw ArgumentError('parent must be a folder rule');
+      }
+      if (parent.parentId != null) {
+        throw ArgumentError('cannot nest under a child rule');
+      }
+      TrackingPattern.compile(patternOrUri);
+    } else if (kind == TrackingRuleKind.regex) {
+      TrackingPattern.compile(patternOrUri);
+    } else if (kind == TrackingRuleKind.folder ||
+        kind == TrackingRuleKind.file) {
+      // path validated by picker
     }
+
     await _db.into(_db.trackingRules).insert(
           TrackingRulesCompanion.insert(
             id: id,
@@ -47,9 +90,16 @@ class TrackingRepository {
             patternOrUri: patternOrUri.trim(),
             enabled: Value(enabled),
             createdAt: now,
+            parentId: Value(parentId),
+            tagsJson: Value(encodeTagsJson(cleanedTags)),
+            sourceKind: Value(cleanedSource),
           ),
         );
-    _log.info('tracking', 'added rule $resolvedName (${kind.wire})');
+    _log.info(
+      'tracking',
+      'added rule $resolvedName (${kind.wire}'
+      '${parentId != null ? ', child of $parentId' : ''})',
+    );
     return TrackingRule(
       id: id,
       name: resolvedName,
@@ -57,12 +107,24 @@ class TrackingRepository {
       patternOrUri: patternOrUri.trim(),
       enabled: enabled,
       createdAt: now,
+      parentId: parentId,
+      tags: cleanedTags,
+      sourceKind: cleanedSource,
     );
   }
 
   Future<void> updateRule(TrackingRule rule) async {
     if (rule.kind == TrackingRuleKind.regex) {
       TrackingPattern.compile(rule.patternOrUri);
+    }
+    if (rule.parentId != null) {
+      if (rule.kind != TrackingRuleKind.regex) {
+        throw ArgumentError('child rules must be regex');
+      }
+      final parent = await getRule(rule.parentId!);
+      if (parent == null || parent.kind != TrackingRuleKind.folder) {
+        throw ArgumentError('invalid parent for child rule');
+      }
     }
     await (_db.update(_db.trackingRules)..where((t) => t.id.equals(rule.id)))
         .write(
@@ -71,11 +133,20 @@ class TrackingRepository {
         kind: Value(rule.kind.wire),
         patternOrUri: Value(rule.patternOrUri.trim()),
         enabled: Value(rule.enabled),
+        parentId: Value(rule.parentId),
+        tagsJson: Value(encodeTagsJson(normalizeTagList(rule.tags))),
+        sourceKind: Value(_normalizeSourceKind(rule.sourceKind)),
       ),
     );
   }
 
   Future<void> deleteRule(String id) async {
+    final children = await (_db.select(_db.trackingRules)
+          ..where((t) => t.parentId.equals(id)))
+        .get();
+    for (final child in children) {
+      await deleteRule(child.id);
+    }
     await (_db.delete(_db.trackingRules)..where((t) => t.id.equals(id))).go();
     await (_db.update(_db.localTrackedFiles)
           ..where((t) => t.ruleId.equals(id)))
@@ -95,14 +166,36 @@ class TrackingRepository {
     return row == null ? null : _localFromRow(row);
   }
 
-  Future<List<LocalTrackedFile>> listLocalFiles({String? ruleId}) async {
+  Future<List<LocalTrackedFile>> listLocalFiles({
+    String? ruleId,
+    Iterable<String>? ruleIds,
+  }) async {
+    final ids = <String>{
+      ?ruleId,
+      ...?ruleIds,
+    };
     final query = _db.select(_db.localTrackedFiles)
       ..orderBy([(t) => OrderingTerm.desc(t.seenAt)]);
-    if (ruleId != null) {
-      query.where((t) => t.ruleId.equals(ruleId));
+    if (ids.length == 1) {
+      query.where((t) => t.ruleId.equals(ids.single));
+    } else if (ids.length > 1) {
+      query.where((t) => t.ruleId.isIn(ids.toList()));
     }
     final rows = await query.get();
     return rows.map(_localFromRow).toList();
+  }
+
+  /// Rule ids for a drawer group: the rule itself plus folder include-children.
+  Future<Set<String>> groupRuleIds(String? ruleId) async {
+    if (ruleId == null) return {};
+    final forest = await listRules();
+    for (final r in forest) {
+      if (r.id == ruleId) {
+        return {r.id, ...r.children.map((c) => c.id)};
+      }
+    }
+    // Child selected directly (unusual) — still return itself.
+    return {ruleId};
   }
 
   Future<List<LocalTrackedFile>> listTracked() async {
@@ -196,6 +289,21 @@ class TrackingRepository {
     await _db.delete(_db.localTrackedFiles).go();
   }
 
+  List<TrackingRule> _forestFromRows(List<TrackingRuleRow> rows) {
+    final flat = rows.map(_ruleFromRow).toList();
+    final byParent = <String, List<TrackingRule>>{};
+    for (final r in flat) {
+      final pid = r.parentId;
+      if (pid == null) continue;
+      byParent.putIfAbsent(pid, () => []).add(r);
+    }
+    return [
+      for (final r in flat)
+        if (r.parentId == null)
+          r.copyWith(children: List.unmodifiable(byParent[r.id] ?? const [])),
+    ];
+  }
+
   TrackingRule _ruleFromRow(TrackingRuleRow row) {
     return TrackingRule(
       id: row.id,
@@ -204,6 +312,9 @@ class TrackingRepository {
       patternOrUri: row.patternOrUri,
       enabled: row.enabled,
       createdAt: row.createdAt,
+      parentId: row.parentId,
+      tags: decodeTagsJson(row.tagsJson),
+      sourceKind: row.sourceKind,
     );
   }
 
@@ -222,4 +333,32 @@ class TrackingRepository {
       ingestStatus: IngestStatusWire.parse(row.ingestStatus),
     );
   }
+}
+
+List<String> normalizeTagList(Iterable<String> raw) {
+  final out = <String>{};
+  for (final t in raw) {
+    final s = t.trim();
+    if (s.isNotEmpty) out.add(s);
+  }
+  return out.toList()..sort();
+}
+
+String encodeTagsJson(List<String> tags) => jsonEncode(normalizeTagList(tags));
+
+List<String> decodeTagsJson(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return const [];
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return const [];
+    return normalizeTagList(decoded.map((e) => '$e'));
+  } catch (_) {
+    return const [];
+  }
+}
+
+String? _normalizeSourceKind(String? raw) {
+  final t = raw?.trim().toLowerCase();
+  if (t == null || t.isEmpty) return null;
+  return t;
 }

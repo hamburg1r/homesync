@@ -55,7 +55,7 @@ class DeviceScanner {
     await _ensurePermission();
     final roots = await _resolveRoots(rules);
     final now = DateTime.now().toUtc().toIso8601String();
-    final regexRules = rules
+    final topLevelRegex = rules
         .where((r) => r.kind == TrackingRuleKind.regex)
         .map((r) => (rule: r, pattern: TrackingPattern.compile(r.patternOrUri)))
         .toList();
@@ -96,13 +96,13 @@ class DeviceScanner {
       required String path,
       required int sizeBytes,
       required int mtimeMs,
-      required TrackingRule? matched,
+      required TrackingRuleMatch? matched,
     }) async {
       final norm = p.normalize(path);
       if (!seenPaths.add(norm)) return;
       seen += 1;
       final title = p.basename(path);
-      final kind = sourceKindFromPath(path);
+      final kind = matched?.sourceKindOverride ?? sourceKindFromPath(path);
 
       if (matched != null) {
         tracked += 1;
@@ -129,7 +129,7 @@ class DeviceScanner {
           await repository.upsertLocalFile(
             LocalTrackedFile(
               localPath: path,
-              ruleId: matched.id,
+              ruleId: matched.rule.id,
               fileId: existing.fileId,
               contentHash: existing.contentHash,
               title: title,
@@ -150,7 +150,7 @@ class DeviceScanner {
           await repository.upsertLocalFile(
             LocalTrackedFile(
               localPath: path,
-              ruleId: matched.id,
+              ruleId: matched.rule.id,
               fileId: existing.fileId,
               contentHash: existing.contentHash,
               title: title,
@@ -169,9 +169,9 @@ class DeviceScanner {
           await repository.upsertLocalFile(
             LocalTrackedFile(
               localPath: path,
-              ruleId: matched.id,
+              ruleId: matched.rule.id,
               fileId: existing?.fileId,
-              contentHash: metadataUnchanged ? existing?.contentHash : null,
+              contentHash: metadataUnchanged ? existing.contentHash : null,
               title: title,
               sizeBytes: sizeBytes,
               mtimeMs: mtimeMs,
@@ -206,7 +206,7 @@ class DeviceScanner {
         if (path.contains('/.')) continue;
         final matched = _matchRule(
           path: path,
-          regexRules: regexRules,
+          topLevelRegex: topLevelRegex,
           folderRules: folderRules,
           fileRulePaths: fileRulePaths,
         );
@@ -232,7 +232,7 @@ class DeviceScanner {
         path: path,
         sizeBytes: size,
         mtimeMs: mtimeMs,
-        matched: rule,
+        matched: TrackingRuleMatch(rule: rule),
       );
     }
 
@@ -284,7 +284,7 @@ class DeviceScanner {
   Future<int> enqueuePending({IngestProgressCallback? onProgress}) async {
     final rules =
         (await repository.listRules()).where((r) => r.enabled).toList();
-    final ruleNames = {for (final r in rules) r.id: r.name};
+    final byId = indexTrackingRules(rules);
     final pending = await repository.listNeedingIngest();
     if (pending.isEmpty) return 0;
 
@@ -312,17 +312,17 @@ class DeviceScanner {
         continue;
       }
       try {
-        final ruleName = ruleNames[row.ruleId] ?? 'misc';
+        final meta = resolveTrackingIngestMeta(byId, row);
         final source = File(row.localPath);
         final reuseHash = await _canReuseContentHash(row, source);
         final item = await ingest.enqueueFile(
           source,
           title: row.title,
           sourceKind: row.sourceKind,
-          relativePath:
-              'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          relativePath: meta.relativePath,
           replaceFileId: row.fileId,
           knownContentHash: reuseHash ? row.contentHash : null,
+          tags: meta.tags,
           index: i + 1,
           total: total,
           onProgress: onProgress,
@@ -373,7 +373,7 @@ class DeviceScanner {
   Future<int> ingestPending({IngestProgressCallback? onProgress}) async {
     final rules =
         (await repository.listRules()).where((r) => r.enabled).toList();
-    final ruleNames = {for (final r in rules) r.id: r.name};
+    final byId = indexTrackingRules(rules);
     final pending = await repository.listNeedingIngest();
     if (pending.isEmpty) return 0;
 
@@ -382,18 +382,18 @@ class DeviceScanner {
     for (var i = 0; i < total; i++) {
       final row = pending[i];
       try {
-        final ruleName = ruleNames[row.ruleId] ?? 'misc';
+        final meta = resolveTrackingIngestMeta(byId, row);
         final source = File(row.localPath);
         final reuseHash = await _canReuseContentHash(row, source);
         final file = await ingest.ingestFile(
           source,
           title: row.title,
           sourceKind: row.sourceKind,
-          relativePath:
-              'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          relativePath: meta.relativePath,
           replaceFileId: row.fileId,
           previousContentHash: row.contentHash,
           knownContentHash: reuseHash ? row.contentHash : null,
+          tags: meta.tags,
           index: i + 1,
           total: total,
           onProgress: onProgress,
@@ -439,22 +439,51 @@ class DeviceScanner {
         stat.modified.millisecondsSinceEpoch == row.mtimeMs;
   }
 
-  TrackingRule? _matchRule({
+  TrackingRuleMatch? _matchRule({
     required String path,
-    required List<({TrackingRule rule, TrackingPattern pattern})> regexRules,
+    required List<({TrackingRule rule, TrackingPattern pattern})> topLevelRegex,
     required List<TrackingRule> folderRules,
     required Map<String, TrackingRule> fileRulePaths,
   }) {
     final norm = p.normalize(path);
     final fileHit = fileRulePaths[norm];
-    if (fileHit != null) return fileHit;
+    if (fileHit != null) return TrackingRuleMatch(rule: fileHit);
+
     for (final folder in folderRules) {
-      if (_isUnderRoot(norm, folder.patternOrUri)) return folder;
+      final root = p.normalize(folder.patternOrUri);
+      if (!_isUnderRoot(norm, root)) continue;
+      final enabledChildren =
+          folder.children.where((c) => c.enabled).toList(growable: false);
+      if (enabledChildren.isEmpty) {
+        return TrackingRuleMatch(rule: folder, folderRoot: root);
+      }
+      final rel = _relativeUnderRoot(norm, root);
+      for (final child in enabledChildren) {
+        final pattern = TrackingPattern.compile(child.patternOrUri);
+        if (pattern.matchesPath(rel) || pattern.matchesPath(norm)) {
+          return TrackingRuleMatch(
+            rule: child,
+            folderParent: folder,
+            folderRoot: root,
+          );
+        }
+      }
+      // Under folder but no include child matched → not tracked by this folder.
     }
-    for (final entry in regexRules) {
-      if (entry.pattern.matchesPath(norm)) return entry.rule;
+
+    for (final entry in topLevelRegex) {
+      if (entry.pattern.matchesPath(norm)) {
+        return TrackingRuleMatch(rule: entry.rule);
+      }
     }
     return null;
+  }
+
+  String _relativeUnderRoot(String path, String root) {
+    final norm = p.normalize(path);
+    final base = p.normalize(root);
+    if (norm == base) return p.basename(norm);
+    return p.relative(norm, from: base).replaceAll('\\', '/');
   }
 
   Future<void> _ensurePermission() async {

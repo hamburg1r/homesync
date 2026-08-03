@@ -95,6 +95,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
         name: result.name,
         kind: TrackingRuleKind.regex,
         patternOrUri: result.patternOrUri,
+        tags: result.tags,
+        sourceKind: result.sourceKind,
       );
       widget.onRulesChanged?.call();
       await _reloadRules();
@@ -107,44 +109,79 @@ class _SettingsSheetState extends State<SettingsSheet> {
   }
 
   Future<void> _addFolderRule() async {
-    final name = await showDialog<String>(
+    final draft = await showDialog<TrackingRuleDraft>(
       context: context,
       builder: (context) => const FolderNameDialog(),
     );
-    if (name == null || !mounted) return;
+    if (draft == null || !mounted) return;
 
     final path = await FilePicker.getDirectoryPath();
     if (path == null) return;
     await widget.tracking.addRule(
-      name: name,
+      name: draft.name,
       kind: TrackingRuleKind.folder,
       patternOrUri: path,
+      tags: draft.tags,
+      sourceKind: draft.sourceKind,
     );
     widget.onRulesChanged?.call();
     await _reloadRules();
   }
 
   Future<void> _addFileRule() async {
-    final name = await showDialog<String>(
+    final draft = await showDialog<TrackingRuleDraft>(
       context: context,
       builder: (context) => const FolderNameDialog(
         title: 'File rule name',
         confirmLabel: 'Pick file',
       ),
     );
-    if (name == null || !mounted) return;
+    if (draft == null || !mounted) return;
 
     final result = await FilePicker.pickFiles(allowMultiple: false);
     final path =
         result?.files.isNotEmpty == true ? result!.files.first.path : null;
     if (path == null || path.isEmpty) return;
     await widget.tracking.addRule(
-      name: name,
+      name: draft.name,
       kind: TrackingRuleKind.file,
       patternOrUri: path,
+      tags: draft.tags,
+      sourceKind: draft.sourceKind,
     );
     widget.onRulesChanged?.call();
     await _reloadRules();
+  }
+
+  Future<void> _addChildRegex(TrackingRule folder) async {
+    final result = await showDialog<TrackingRuleDraft>(
+      context: context,
+      builder: (context) => AddTrackingRuleDialog(
+        kind: TrackingRuleKind.regex,
+        title: 'Include regex under ${folder.name}',
+        showNameField: false,
+        initialName: folder.name,
+      ),
+    );
+    if (result == null) return;
+    try {
+      TrackingPattern.compile(result.patternOrUri);
+      await widget.tracking.addRule(
+        name: folder.name,
+        kind: TrackingRuleKind.regex,
+        patternOrUri: result.patternOrUri,
+        parentId: folder.id,
+        tags: result.tags,
+        sourceKind: result.sourceKind,
+      );
+      widget.onRulesChanged?.call();
+      await _reloadRules();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Invalid pattern: $e')),
+      );
+    }
   }
 
   Future<void> _deleteRule(TrackingRule rule) async {
@@ -289,6 +326,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 onAddRegex: _addRegexRule,
                 onAddFolder: _addFolderRule,
                 onAddFile: _addFileRule,
+                onAddChildRegex: _addChildRegex,
               ),
             ],
           ),
