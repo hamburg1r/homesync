@@ -33,11 +33,12 @@ class SettingsTrackingSection extends StatelessWidget {
         Text('Tracking rules', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 4),
         Text(
-          'Empty = no automatic upload. Regex matches filenames '
-          '(e.g. *.pdf). Folder rules ingest every file in that tree; '
-          'optional include-regex children filter within the folder. '
-          'File rules upload one chosen path. Edit tags or source_kind '
-          'to re-sync matching files; overlapping rules union tags.',
+          'Empty = no automatic upload. New rules start disabled — add '
+          'include-regex children under a folder, then flip the switch. '
+          'Folder with no children = whole tree; with include-regex children = '
+          'only matching files. Disable cancels pending uploads for that rule. '
+          'Edit tags or source_kind to re-sync matching files; '
+          'overlapping rules union tags.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 12),

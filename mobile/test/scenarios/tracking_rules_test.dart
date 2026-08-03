@@ -116,6 +116,7 @@ void main() {
         name: '', // → misc
         kind: TrackingRuleKind.regex,
         patternOrUri: '*.pdf',
+        enabled: true,
       );
       expect(rule.name, 'misc');
 
@@ -200,6 +201,7 @@ void main() {
         name: 'important',
         kind: TrackingRuleKind.folder,
         patternOrUri: folder.path,
+        enabled: true,
       );
 
       final result = await harness.scanner.scanAndIngest();
@@ -275,6 +277,7 @@ void main() {
         name: 'whatsapp',
         kind: TrackingRuleKind.folder,
         patternOrUri: folder.path,
+        enabled: true,
       );
 
       final result = await harness.scanner.scanAndIngest();
@@ -373,6 +376,7 @@ void main() {
         patternOrUri: folder.path,
         tags: const ['album'],
         sourceKind: 'misc',
+        enabled: true,
       );
       await harness.tracking.addRule(
         name: 'pics',
@@ -380,6 +384,7 @@ void main() {
         patternOrUri: '*.jpg',
         parentId: parent.id,
         tags: const ['photo'],
+        enabled: true,
       );
 
       final result = await harness.scanner.scanAndIngest();
@@ -391,6 +396,123 @@ void main() {
 
       final untracked = await harness.tracking.listUntracked();
       expect(untracked.any((f) => f.title == 'b.txt'), isTrue);
+    });
+
+    test('top-level rules default disabled; disable cancels pending', () async {
+      var creates = 0;
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            creates += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "dis-$creates",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'dis-1', mode: 'pinned');
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/Bulk')
+        ..createSync(recursive: true);
+      await File('${folder.path}/a.bin').writeAsBytes(Uint8List.fromList([1]));
+      await File('${folder.path}/b.bin').writeAsBytes(Uint8List.fromList([2]));
+
+      final rule = await harness.tracking.addRule(
+        name: 'bulk',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+      );
+      expect(rule.enabled, isFalse);
+
+      final skipped = await harness.scanner.scanAndIngest();
+      expect(skipped.tracked, 0);
+      expect(skipped.ingested, 0);
+      expect(creates, 0);
+
+      await harness.scanner.setRuleEnabled(rule, true);
+      final indexed = await harness.scanner.scanAndIngest(ingestMatches: false);
+      expect(indexed.tracked, 2);
+      expect(indexed.ingested, 0);
+      final pending = await harness.tracking.listNeedingIngest();
+      expect(pending, hasLength(2));
+
+      final cancelled = await harness.scanner.setRuleEnabled(rule, false);
+      expect(cancelled, 2);
+      expect(await harness.tracking.listNeedingIngest(), isEmpty);
+      final after = await harness.scanner.scanAndIngest();
+      expect(after.ingested, 0);
+      expect(creates, 0);
+    });
+
+    test('folder with include children never tracks whole tree', () async {
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            return http.Response('should not ingest', 500);
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/Mixed')
+        ..createSync(recursive: true);
+      await File('${folder.path}/keep.jpg').writeAsBytes(Uint8List.fromList([1]));
+      await File('${folder.path}/skip.txt').writeAsString('no');
+
+      final parent = await harness.tracking.addRule(
+        name: 'mixed',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+        enabled: true,
+      );
+      // Child present but disabled ⇒ match nothing (not whole folder).
+      await harness.tracking.addRule(
+        name: 'mixed',
+        kind: TrackingRuleKind.regex,
+        patternOrUri: '*.jpg',
+        parentId: parent.id,
+        enabled: false,
+      );
+
+      final none = await harness.scanner.scanAndIngest();
+      expect(none.tracked, 0);
+      expect(none.ingested, 0);
     });
 
     test('two matching rules union tags; edit propagates tags and source_kind',
@@ -509,12 +631,14 @@ void main() {
         kind: TrackingRuleKind.folder,
         patternOrUri: folder.path,
         tags: const ['album'],
+        enabled: true,
       );
       await harness.tracking.addRule(
         name: 'jpgs',
         kind: TrackingRuleKind.regex,
         patternOrUri: '*.jpg',
         tags: const ['camera'],
+        enabled: true,
       );
 
       final result = await harness.scanner.scanAndIngest();
@@ -600,6 +724,7 @@ void main() {
         name: 'one',
         kind: TrackingRuleKind.file,
         patternOrUri: keep.path,
+        enabled: true,
       );
 
       final result = await harness.scanner.scanAndIngest();
@@ -637,6 +762,7 @@ void main() {
         name: 'pdfs',
         kind: TrackingRuleKind.regex,
         patternOrUri: '*.pdf',
+        enabled: true,
       );
 
       var indexedPending = false;
@@ -723,6 +849,7 @@ void main() {
         name: 'pdfs',
         kind: TrackingRuleKind.regex,
         patternOrUri: '*.pdf',
+        enabled: true,
       );
 
       await harness.scanner.scanAndIngest(ingestMatches: false);
@@ -794,6 +921,7 @@ void main() {
         name: 'iso',
         kind: TrackingRuleKind.file,
         patternOrUri: file.path,
+        enabled: true,
       );
 
       final first = await harness.scanner.scanAndIngest();

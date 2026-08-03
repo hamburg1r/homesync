@@ -476,29 +476,32 @@ class DeviceScanner {
       if (!_isUnderRoot(norm, root)) continue;
       final enabledChildren =
           folder.children.where((c) => c.enabled).toList(growable: false);
-      if (enabledChildren.isEmpty) {
+      // Children present ⇒ include-only (never fall back to whole tree).
+      // No children ⇒ track every file under the folder.
+      if (folder.children.isNotEmpty) {
+        if (enabledChildren.isEmpty) continue;
+        final rel = _relativeUnderRoot(norm, root);
+        TrackingRule? childHit;
+        for (final child in enabledChildren) {
+          final pattern = TrackingPattern.compile(child.patternOrUri);
+          if (pattern.matchesPath(rel) || pattern.matchesPath(norm)) {
+            childHit = child;
+            break;
+          }
+        }
+        if (childHit == null) continue;
         contributing.add(folder);
+        contributing.add(childHit);
         if (primary == null) {
-          primary = folder;
+          primary = childHit;
+          folderParent = folder;
           folderRoot = root;
         }
         continue;
       }
-      final rel = _relativeUnderRoot(norm, root);
-      TrackingRule? childHit;
-      for (final child in enabledChildren) {
-        final pattern = TrackingPattern.compile(child.patternOrUri);
-        if (pattern.matchesPath(rel) || pattern.matchesPath(norm)) {
-          childHit = child;
-          break;
-        }
-      }
-      if (childHit == null) continue;
       contributing.add(folder);
-      contributing.add(childHit);
       if (primary == null) {
-        primary = childHit;
-        folderParent = folder;
+        primary = folder;
         folderRoot = root;
       }
     }
@@ -718,6 +721,25 @@ class DeviceScanner {
       tagsUpdated: tagsUpdated,
       sourceKindUpdated: sourceKindUpdated,
     );
+  }
+
+  /// Disable/enable a rule; when disabling, cancel pending uploads for it.
+  ///
+  /// Returns how many pending/failed local rows were demoted. An upload already
+  /// in flight may still finish; queued and not-yet-started work is dropped.
+  Future<int> setRuleEnabled(TrackingRule rule, bool enabled) async {
+    await repository.setRuleEnabled(rule.id, enabled);
+    if (enabled) return 0;
+    final ids = await repository.ruleIdsAffectedBy(rule);
+    final paths = await repository.cancelPendingForRuleIds(ids);
+    if (paths.isNotEmpty) {
+      await ingest.queue.removeBySourcePaths(paths);
+    }
+    log.info(
+      'tracking',
+      'disabled ${rule.name}: cancelled ${paths.length} pending',
+    );
+    return paths.length;
   }
 }
 

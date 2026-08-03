@@ -49,7 +49,7 @@ class TrackingRepository {
     String? name,
     required TrackingRuleKind kind,
     required String patternOrUri,
-    bool enabled = true,
+    bool? enabled,
     String? parentId,
     List<String> tags = const [],
     String? sourceKind,
@@ -59,6 +59,10 @@ class TrackingRepository {
     final resolvedName = normalizeRuleName(name);
     final cleanedTags = normalizeTagList(tags);
     final cleanedSource = _normalizeSourceKind(sourceKind);
+    // Top-level rules start off so the user can finish nesting include-regexes
+    // before any scan/upload. Include-children default on (filters only apply
+    // once the parent folder is enabled).
+    final resolvedEnabled = enabled ?? (parentId != null);
 
     if (parentId != null) {
       if (kind != TrackingRuleKind.regex) {
@@ -88,7 +92,7 @@ class TrackingRepository {
             name: resolvedName,
             kind: kind.wire,
             patternOrUri: patternOrUri.trim(),
-            enabled: Value(enabled),
+            enabled: Value(resolvedEnabled),
             createdAt: now,
             parentId: Value(parentId),
             tagsJson: Value(encodeTagsJson(cleanedTags)),
@@ -98,14 +102,15 @@ class TrackingRepository {
     _log.info(
       'tracking',
       'added rule $resolvedName (${kind.wire}'
-      '${parentId != null ? ', child of $parentId' : ''})',
+      '${parentId != null ? ', child of $parentId' : ''}'
+      ', enabled=$resolvedEnabled)',
     );
     return TrackingRule(
       id: id,
       name: resolvedName,
       kind: kind,
       patternOrUri: patternOrUri.trim(),
-      enabled: enabled,
+      enabled: resolvedEnabled,
       createdAt: now,
       parentId: parentId,
       tags: cleanedTags,
@@ -159,6 +164,57 @@ class TrackingRepository {
     );
   }
 
+  /// Rule ids that may still drive ingest (enabled top-level + enabled children).
+  Future<Set<String>> enabledRuleIds() async {
+    final forest = await listRules();
+    final ids = <String>{};
+    for (final r in forest) {
+      if (!r.enabled) continue;
+      ids.add(r.id);
+      for (final c in r.children) {
+        if (c.enabled) ids.add(c.id);
+      }
+    }
+    return ids;
+  }
+
+  /// Ids covered when disabling [rule] (folder includes its children).
+  Future<Set<String>> ruleIdsAffectedBy(TrackingRule rule) async {
+    if (rule.kind != TrackingRuleKind.folder) return {rule.id};
+    final childRows = await (_db.select(_db.trackingRules)
+          ..where((t) => t.parentId.equals(rule.id)))
+        .get();
+    return {rule.id, ...childRows.map((c) => c.id)};
+  }
+
+  /// Drop pending/failed local rows for [ruleIds] so they will not upload.
+  ///
+  /// Synced rows keep their binding; returns absolute paths that were cancelled.
+  Future<List<String>> cancelPendingForRuleIds(Set<String> ruleIds) async {
+    if (ruleIds.isEmpty) return const [];
+    final rows = await (_db.select(_db.localTrackedFiles)
+          ..where(
+            (t) =>
+                t.ruleId.isIn(ruleIds.toList()) &
+                t.ingestStatus.isIn([
+                  IngestStatus.pending.wire,
+                  IngestStatus.failed.wire,
+                ]),
+          ))
+        .get();
+    if (rows.isEmpty) return const [];
+    final paths = rows.map((r) => r.localPath).toList();
+    await (_db.update(_db.localTrackedFiles)
+          ..where((t) => t.localPath.isIn(paths)))
+        .write(
+      const LocalTrackedFilesCompanion(
+        ruleId: Value(null),
+        ingestStatus: Value('untracked'),
+      ),
+    );
+    return paths;
+  }
+
   Future<LocalTrackedFile?> getLocalFile(String localPath) async {
     final row = await (_db.select(_db.localTrackedFiles)
           ..where((t) => t.localPath.equals(localPath)))
@@ -207,11 +263,16 @@ class TrackingRepository {
   }
 
   /// Pending or failed tracked files waiting for phone→PC ingest.
+  ///
+  /// Only rows bound to currently **enabled** rules (disabled rules do not
+  /// keep uploading leftover pending work).
   Future<List<LocalTrackedFile>> listNeedingIngest() async {
+    final enabled = await enabledRuleIds();
+    if (enabled.isEmpty) return const [];
     final rows = await (_db.select(_db.localTrackedFiles)
           ..where(
             (t) =>
-                t.ruleId.isNotNull() &
+                t.ruleId.isIn(enabled.toList()) &
                 t.ingestStatus.isIn([
                   IngestStatus.pending.wire,
                   IngestStatus.failed.wire,

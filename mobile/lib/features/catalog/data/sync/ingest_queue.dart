@@ -40,6 +40,20 @@ class IngestQueue {
     await _persist(items);
   }
 
+  /// Drop queue rows whose [IngestQueueItem.sourcePath] is in [paths].
+  Future<int> removeBySourcePaths(Iterable<String> paths) async {
+    final want = paths.toSet();
+    if (want.isEmpty) return 0;
+    final items = await list();
+    final before = items.length;
+    items.removeWhere(
+      (e) => e.sourcePath != null && want.contains(e.sourcePath),
+    );
+    final removed = before - items.length;
+    if (removed > 0) await _persist(items);
+    return removed;
+  }
+
   Future<void> _persist(List<IngestQueueItem> items) async {
     await _settings.writeRaw(
       _kQueue,

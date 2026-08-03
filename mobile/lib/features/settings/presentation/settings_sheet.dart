@@ -239,9 +239,19 @@ class _SettingsSheetState extends State<SettingsSheet> {
   }
 
   Future<void> _toggleRule(TrackingRule rule, bool enabled) async {
-    await widget.tracking.setRuleEnabled(rule.id, enabled);
+    final cancelled = await widget.scanner.setRuleEnabled(rule, enabled);
     widget.onRulesChanged?.call();
     await _reloadRules();
+    if (!mounted || enabled || cancelled == 0) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Disabled — cancelled $cancelled pending upload'
+          '${cancelled == 1 ? '' : 's'}'
+          ' (any already in flight may still finish)',
+        ),
+      ),
+    );
   }
 
   Future<void> _reclaimDevice() async {

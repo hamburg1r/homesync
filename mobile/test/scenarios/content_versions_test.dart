@@ -113,6 +113,7 @@ void main() {
       name: 'docs',
       kind: TrackingRuleKind.file,
       patternOrUri: file.path,
+      enabled: true,
     );
 
     final first = await harness.scanner.scanAndIngest();
