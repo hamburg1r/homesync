@@ -153,6 +153,7 @@ class TrackingRepository {
             contentHash: Value(file.contentHash),
             title: Value(file.title),
             sizeBytes: Value(file.sizeBytes),
+            mtimeMs: Value(file.mtimeMs),
             mimeType: Value(file.mimeType),
             sourceKind: Value(file.sourceKind),
             seenAt: file.seenAt,
@@ -165,6 +166,8 @@ class TrackingRepository {
     required String localPath,
     required String fileId,
     required String contentHash,
+    int? sizeBytes,
+    int? mtimeMs,
   }) async {
     await (_db.update(_db.localTrackedFiles)
           ..where((t) => t.localPath.equals(localPath)))
@@ -172,6 +175,8 @@ class TrackingRepository {
       LocalTrackedFilesCompanion(
         fileId: Value(fileId),
         contentHash: Value(contentHash),
+        sizeBytes: sizeBytes != null ? Value(sizeBytes) : const Value.absent(),
+        mtimeMs: mtimeMs != null ? Value(mtimeMs) : const Value.absent(),
         ingestStatus: Value(IngestStatus.synced.wire),
       ),
     );
@@ -210,6 +215,7 @@ class TrackingRepository {
       contentHash: row.contentHash,
       title: row.title,
       sizeBytes: row.sizeBytes,
+      mtimeMs: row.mtimeMs,
       mimeType: row.mimeType,
       sourceKind: row.sourceKind,
       seenAt: row.seenAt,

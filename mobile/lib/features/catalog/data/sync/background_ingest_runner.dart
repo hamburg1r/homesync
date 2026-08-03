@@ -6,6 +6,7 @@ import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
 import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
@@ -97,6 +98,16 @@ class HomesyncIngestTaskHandler extends TaskHandler {
             'file': result.file.toJson(),
             'availability': result.availability.toJson(),
           });
+        } on KdbxConflictPendingException catch (e) {
+          FlutterForegroundTask.sendDataToMain({
+            'type': 'item_conflict',
+            'id': item.id,
+            'conflict_id': e.conflict.conflictId,
+            'file_id': e.conflict.fileId,
+            'state': e.conflict.state,
+            'message': e.toString(),
+          });
+          // Keep going — other uploads may succeed.
         } catch (e) {
           FlutterForegroundTask.sendDataToMain({
             'type': 'item_err',
@@ -167,6 +178,7 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       sourceKind: item.sourceKind,
       relativePath: item.relativePath,
       sourcePath: item.sourcePath,
+      replaceFileId: item.replaceFileId,
       createdAt: item.createdAt,
     );
   }
@@ -247,18 +259,28 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       'fraction': 0.5,
     });
 
-    final created = await api.createFile(
-      FileCreateRequest(
-        contentHash: item.contentHash,
-        hashAlgo: item.hashAlgo,
-        sizeBytes: item.sizeBytes,
-        mimeType: item.mimeType,
-        title: item.title,
-        sourceKind: item.sourceKind,
-        sourceDeviceId: deviceId,
-        relativePath: item.relativePath,
-      ),
-    );
+    final created = item.replaceFileId != null
+        ? await api.updateFileContent(
+            item.replaceFileId!,
+            FileContentRequest(
+              contentHash: item.contentHash,
+              hashAlgo: item.hashAlgo,
+              sizeBytes: item.sizeBytes,
+              note: 'phone track',
+            ),
+          )
+        : await api.createFile(
+            FileCreateRequest(
+              contentHash: item.contentHash,
+              hashAlgo: item.hashAlgo,
+              sizeBytes: item.sizeBytes,
+              mimeType: item.mimeType,
+              title: item.title,
+              sourceKind: item.sourceKind,
+              sourceDeviceId: deviceId,
+              relativePath: item.relativePath,
+            ),
+          );
 
     final avail = await api.putAvailability(
       fileId: created.fileId,
@@ -392,6 +414,12 @@ class BackgroundIngestRunner {
         _onProgress?.call(p);
       case 'item_ok':
         _commitChain = _commitChain.then((_) => _commitItemOk(map));
+      case 'item_conflict':
+        log.warn(
+          'ingest',
+          'KeePass conflict ${map['conflict_id']} for job ${map['id']} '
+          '(${map['state']}) — open Conflicts in the drawer',
+        );
       case 'item_err':
         log.warn(
           'ingest',
@@ -600,6 +628,7 @@ class BackgroundIngestRunner {
           relativePath:
               'track/${ruleNames[row.ruleId] ?? 'misc'}/${row.title ?? p.basename(row.localPath)}',
           sourcePath: row.localPath,
+          replaceFileId: row.fileId,
           createdAt: now,
         ),
     ];

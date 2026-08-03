@@ -82,6 +82,7 @@ class LocalTrackedFile {
     this.contentHash,
     this.title,
     required this.sizeBytes,
+    this.mtimeMs,
     this.mimeType,
     required this.sourceKind,
     required this.seenAt,
@@ -94,6 +95,8 @@ class LocalTrackedFile {
   final String? contentHash;
   final String? title;
   final int sizeBytes;
+  /// Milliseconds since epoch; null until first scan after schema v7.
+  final int? mtimeMs;
   final String? mimeType;
   final String sourceKind;
   final String seenAt;

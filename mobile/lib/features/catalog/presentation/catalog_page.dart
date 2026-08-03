@@ -8,6 +8,7 @@ import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_view.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
 import 'package:homesync_mobile/features/catalog/presentation/ingest_progress_banner.dart';
+import 'package:homesync_mobile/features/catalog/presentation/kdbx_conflicts_sheet.dart';
 import 'package:homesync_mobile/features/catalog/presentation/pin_destination_dialog.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sheet.dart';
@@ -62,6 +63,15 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _openConflicts(BuildContext context) async {
+    final cubit = context.read<CatalogCubit>();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => KdbxConflictsSheet(cubit: cubit),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<CatalogCubit, CatalogState>(
@@ -103,6 +113,7 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           ),
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
+          onOpenConflicts: () => _openConflicts(context),
           onPin: (file) => _bringToPhone(context, file),
           onUnpin: (file) =>
               context.read<CatalogCubit>().removeFromDevice(file.fileId),

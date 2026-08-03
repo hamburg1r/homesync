@@ -9,12 +9,14 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from homesync_server.db import ensure_local_device
-from homesync_server.models import File, FilePath, FileTag, Tag
+from homesync_server.models import File, FilePath, FileTag, FileVersion, Tag
 from homesync_server.schemas.catalog import (
     CatalogDeltaOut,
     FileOut,
     FilePathOut,
     FileTagOut,
+    FileVersionOut,
+    FileVersionsOut,
     TagOut,
 )
 from homesync_server.services import blobs as blob_svc
@@ -70,7 +72,7 @@ def file_to_out(file_row: File, tag_names: list[str] | None = None) -> FileOut:
     mime = (file_row.mime_type or "").strip().lower()
     return FileOut(
         file_id=file_row.file_id,
-        content_hash=file_row.content_hash,
+        content_hash=_stored_head_hash(file_row.content_hash),
         hash_algo=file_row.hash_algo,
         mime_type=file_row.mime_type,
         size_bytes=file_row.size_bytes,
@@ -185,10 +187,55 @@ def patch_file(
 def soft_delete_file(session: Session, file_id: str) -> File:
     row = get_file(session, file_id)
     now = next_updated_at(row.updated_at)
+    # Free UNIQUE(content_hash) so the same bytes can return under this or
+    # another file_id (phone tracking content-replace / re-ingest).
+    if not row.content_hash.startswith("tombstone:"):
+        row.content_hash = f"tombstone:{row.file_id}:{row.content_hash}"
     row.deleted_at = now
     row.updated_at = now
     session.flush()
     return row
+
+
+def _free_tombstone_hash(session: Session, other: File) -> None:
+    """Release a soft-deleted row's real content_hash so another file can take it."""
+    if other.deleted_at is None:
+        return
+    if not other.content_hash.startswith("tombstone:"):
+        other.content_hash = f"tombstone:{other.file_id}:{other.content_hash}"
+        session.flush()
+
+
+def _stored_head_hash(content_hash: str) -> str:
+    """Real hex digest from a head or ``tombstone:{file_id}:{hex}`` sentinel."""
+    raw = content_hash.strip().lower()
+    if raw.startswith("tombstone:"):
+        return raw.rsplit(":", 1)[-1]
+    return raw
+
+
+def _find_file_by_content_hash(
+    session: Session, *, digest: str, algo: str
+) -> File | None:
+    """Active row with this head hash, else soft-deleted tombstone that held it."""
+    active = session.scalars(
+        select(File).where(
+            File.content_hash == digest,
+            File.hash_algo == algo,
+            File.deleted_at.is_(None),
+        )
+    ).first()
+    if active is not None:
+        return active
+    # Soft-deleted rows store ``tombstone:{file_id}:{hex}``.
+    suffix = f":{digest}"
+    return session.scalars(
+        select(File).where(
+            File.hash_algo == algo,
+            File.deleted_at.is_not(None),
+            File.content_hash.endswith(suffix),
+        )
+    ).first()
 
 
 def _safe_ingest_name(title: str | None, content_hash: str) -> str:
@@ -250,15 +297,17 @@ def create_file(
             raise NotFoundError(f"device:{source_device_id}")
 
     now = utc_now_iso()
-    existing = session.scalars(
-        select(File).where(File.content_hash == digest, File.hash_algo == algo)
-    ).first()
+    existing = _find_file_by_content_hash(session, digest=digest, algo=algo)
 
     if existing is not None:
         file_row = existing
         # Revive soft-deleted row on re-ingest of the same hash.
         if file_row.deleted_at is not None:
             file_row.deleted_at = None
+            # Restore real head hash from tombstone sentinel if needed.
+            if file_row.content_hash.startswith("tombstone:"):
+                file_row.content_hash = digest
+                file_row.size_bytes = size_bytes
         if title is not None and title != file_row.title:
             file_row.title = title
         if mime_type is not None and file_row.mime_type is None:
@@ -323,6 +372,149 @@ def create_file(
 
     session.flush()
     return get_file(session, file_row.file_id)
+
+
+def version_to_out(row: FileVersion, *, is_head: bool = False) -> FileVersionOut:
+    return FileVersionOut(
+        version_id=row.version_id,
+        file_id=row.file_id,
+        content_hash=row.content_hash,
+        size_bytes=row.size_bytes,
+        created_at=row.created_at,
+        note=row.note,
+        is_head=is_head,
+    )
+
+
+def update_file_content(
+    session: Session,
+    data_root: Path,
+    file_id: str,
+    *,
+    content_hash: str,
+    hash_algo: str,
+    size_bytes: int,
+    note: str | None = None,
+) -> File:
+    """Archive current head into ``versions`` and set a new head hash.
+
+    Requires the new blob under ``blobs/<algo>/…``. Same hash as head is a
+    no-op. Refuses when the new hash is already another file's head (never
+    merge divergent logical files).
+    """
+    algo = hash_algo.strip().lower()
+    digest = content_hash.strip().lower()
+    if size_bytes < 0:
+        raise IngestValidationError("size_bytes must be >= 0")
+
+    row = get_file(session, file_id)
+    revived = False
+    if row.deleted_at is not None:
+        # Revive: phone tracking often still holds this file_id after a
+        # soft-delete; accepting new bytes restores the catalog row.
+        row.deleted_at = None
+        revived = True
+
+    if algo != row.hash_algo.strip().lower():
+        raise IngestValidationError(
+            f"hash_algo mismatch: file uses {row.hash_algo}, got {algo}"
+        )
+
+    previous_head = _stored_head_hash(row.content_hash)
+    if digest == previous_head:
+        # Idempotent: already at this head (or restoring from tombstone sentinel).
+        if size_bytes != row.size_bytes and not row.content_hash.startswith(
+            "tombstone:"
+        ):
+            raise IngestValidationError(
+                f"size_bytes mismatch for current head: body claims {size_bytes}, "
+                f"catalog has {row.size_bytes}"
+            )
+        if row.content_hash.startswith("tombstone:") or revived:
+            row.content_hash = digest
+            row.size_bytes = size_bytes
+            row.updated_at = next_updated_at(row.updated_at)
+            session.flush()
+        return row
+
+    if not blob_svc.managed_blob_exists(data_root, algo, digest):
+        raise IngestValidationError(
+            "blob not present in managed store; PUT /v1/blobs first"
+        )
+
+    from homesync_server.storage import blob_path
+
+    on_disk = blob_path(data_root, algo, digest)
+    actual_size = on_disk.stat().st_size
+    if actual_size != size_bytes:
+        raise IngestValidationError(
+            f"size_bytes mismatch: body claims {size_bytes}, on disk {actual_size}"
+        )
+
+    other = session.scalars(
+        select(File).where(
+            File.content_hash == digest,
+            File.hash_algo == algo,
+            File.file_id != file_id,
+        )
+    ).first()
+    if other is not None:
+        if other.deleted_at is not None:
+            _free_tombstone_hash(session, other)
+        else:
+            raise CatalogConflictError(other)
+
+    now = utc_now_iso()
+    session.add(
+        FileVersion(
+            version_id=new_uuid(),
+            file_id=file_id,
+            content_hash=previous_head,
+            size_bytes=row.size_bytes,
+            created_at=now,
+            note=note,
+        )
+    )
+    row.content_hash = digest
+    row.size_bytes = size_bytes
+    row.updated_at = next_updated_at(row.updated_at)
+
+    # Linux retention for the new head blob.
+    from homesync_server.services import availability as avail_svc
+
+    linux = ensure_local_device(session)
+    avail_svc.set_availability(
+        session, file_id, linux.device_id, mode="pinned"
+    )
+
+    session.flush()
+    return get_file(session, file_id)
+
+
+def list_file_versions(session: Session, file_id: str) -> FileVersionsOut:
+    """Return current head plus archived versions (newest archived first)."""
+    row = get_file(session, file_id)
+    archived = list(
+        session.scalars(
+            select(FileVersion)
+            .where(FileVersion.file_id == file_id)
+            .order_by(FileVersion.created_at.desc(), FileVersion.version_id.desc())
+        ).all()
+    )
+    head = FileVersionOut(
+        version_id="head",
+        file_id=file_id,
+        content_hash=_stored_head_hash(row.content_hash),
+        size_bytes=row.size_bytes,
+        created_at=row.updated_at,
+        note=None,
+        is_head=True,
+    )
+    return FileVersionsOut(
+        file_id=file_id,
+        head=head,
+        versions=[version_to_out(v) for v in archived],
+    )
 
 
 def list_tags(session: Session) -> list[Tag]:

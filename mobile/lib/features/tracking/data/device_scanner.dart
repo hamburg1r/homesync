@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:homesync_mobile/core/logging/app_log.dart';
+import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/tracking/data/source_kind.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
@@ -94,6 +95,7 @@ class DeviceScanner {
     Future<void> consider({
       required String path,
       required int sizeBytes,
+      required int mtimeMs,
       required TrackingRule? matched,
     }) async {
       final norm = p.normalize(path);
@@ -106,20 +108,60 @@ class DeviceScanner {
         tracked += 1;
         final existing = await repository.getLocalFile(path);
         final alreadySynced = existing?.isSynced ?? false;
-        final row = LocalTrackedFile(
-          localPath: path,
-          ruleId: matched.id,
-          fileId: alreadySynced ? existing!.fileId : null,
-          contentHash: alreadySynced ? existing!.contentHash : null,
-          title: title,
-          sizeBytes: sizeBytes,
-          mimeType: null,
-          sourceKind: kind,
-          seenAt: now,
-          ingestStatus:
-              alreadySynced ? IngestStatus.synced : IngestStatus.pending,
-        );
-        await repository.upsertLocalFile(row);
+        if (alreadySynced) {
+          final sizeUnchanged = existing!.sizeBytes == sizeBytes;
+          final mtimeUnchanged =
+              existing.mtimeMs != null && existing.mtimeMs == mtimeMs;
+          if (sizeUnchanged && mtimeUnchanged) {
+            await repository.upsertLocalFile(
+              LocalTrackedFile(
+                localPath: path,
+                ruleId: matched.id,
+                fileId: existing.fileId,
+                contentHash: existing.contentHash,
+                title: title,
+                sizeBytes: sizeBytes,
+                mtimeMs: mtimeMs,
+                mimeType: existing.mimeType,
+                sourceKind: kind,
+                seenAt: now,
+                ingestStatus: IngestStatus.synced,
+              ),
+            );
+          } else {
+            // Bytes may have changed — rehash on ingest; keep fileId binding.
+            await repository.upsertLocalFile(
+              LocalTrackedFile(
+                localPath: path,
+                ruleId: matched.id,
+                fileId: existing.fileId,
+                contentHash: existing.contentHash,
+                title: title,
+                sizeBytes: sizeBytes,
+                mtimeMs: mtimeMs,
+                mimeType: existing.mimeType,
+                sourceKind: kind,
+                seenAt: now,
+                ingestStatus: IngestStatus.pending,
+              ),
+            );
+          }
+        } else {
+          final row = LocalTrackedFile(
+            localPath: path,
+            ruleId: matched.id,
+            fileId: existing?.fileId,
+            contentHash: existing?.contentHash,
+            title: title,
+            sizeBytes: sizeBytes,
+            mtimeMs: mtimeMs,
+            mimeType: existing?.mimeType,
+            sourceKind: kind,
+            seenAt: now,
+            ingestStatus: IngestStatus.pending,
+          );
+          await repository.upsertLocalFile(row);
+        }
       } else {
         await repository.upsertLocalFile(
           LocalTrackedFile(
@@ -127,6 +169,7 @@ class DeviceScanner {
             ruleId: null,
             title: title,
             sizeBytes: sizeBytes,
+            mtimeMs: mtimeMs,
             sourceKind: kind,
             seenAt: now,
             ingestStatus: IngestStatus.untracked,
@@ -151,6 +194,7 @@ class DeviceScanner {
         await consider(
           path: path,
           sizeBytes: stat.size,
+          mtimeMs: stat.modified.millisecondsSinceEpoch,
           matched: matched,
         );
       }
@@ -163,7 +207,13 @@ class DeviceScanner {
       final path = file.path;
       if (path.contains('/.')) continue;
       final size = (await file.stat()).size;
-      await consider(path: path, sizeBytes: size, matched: rule);
+      final mtimeMs = (await file.stat()).modified.millisecondsSinceEpoch;
+      await consider(
+        path: path,
+        sizeBytes: size,
+        mtimeMs: mtimeMs,
+        matched: rule,
+      );
     }
 
     onProgress?.call(
@@ -243,18 +293,34 @@ class DeviceScanner {
       }
       try {
         final ruleName = ruleNames[row.ruleId] ?? 'misc';
-        await ingest.enqueueFile(
-          File(row.localPath),
+        final source = File(row.localPath);
+        final item = await ingest.enqueueFile(
+          source,
           title: row.title,
           sourceKind: row.sourceKind,
           relativePath:
               'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          replaceFileId: row.fileId,
           index: i + 1,
           total: total,
           onProgress: onProgress,
         );
-        alreadyQueued.add(row.localPath);
-        enqueued += 1;
+        if (row.fileId != null &&
+            row.contentHash != null &&
+            item.contentHash == row.contentHash) {
+          // Touch-only: size/mtime changed but bytes match last head.
+          await repository.markSynced(
+            localPath: row.localPath,
+            fileId: row.fileId!,
+            contentHash: item.contentHash,
+            sizeBytes: item.sizeBytes,
+            mtimeMs: (await source.stat()).modified.millisecondsSinceEpoch,
+          );
+          await ingest.queue.remove(item.id);
+        } else {
+          alreadyQueued.add(row.localPath);
+          enqueued += 1;
+        }
       } catch (e) {
         log.warn('tracking', 'enqueue failed ${row.localPath}: $e');
         await repository.markFailed(row.localPath);
@@ -277,12 +343,15 @@ class DeviceScanner {
       final row = pending[i];
       try {
         final ruleName = ruleNames[row.ruleId] ?? 'misc';
+        final source = File(row.localPath);
         final file = await ingest.ingestFile(
-          File(row.localPath),
+          source,
           title: row.title,
           sourceKind: row.sourceKind,
           relativePath:
               'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          replaceFileId: row.fileId,
+          previousContentHash: row.contentHash,
           index: i + 1,
           total: total,
           onProgress: onProgress,
@@ -291,8 +360,25 @@ class DeviceScanner {
           localPath: row.localPath,
           fileId: file.fileId,
           contentHash: file.contentHash,
+          sizeBytes: file.sizeBytes,
+          mtimeMs: (await source.stat()).modified.millisecondsSinceEpoch,
         );
         ingested += 1;
+      } on KdbxConflictPendingException catch (e) {
+        log.warn(
+          'tracking',
+          'KeePass conflict for ${row.localPath}: ${e.conflict.conflictId}',
+        );
+        // Server head unchanged — keep prior binding; resolve via Conflicts outbox.
+        if (row.fileId != null && row.contentHash != null) {
+          await repository.markSynced(
+            localPath: row.localPath,
+            fileId: row.fileId!,
+            contentHash: row.contentHash!,
+            sizeBytes: row.sizeBytes,
+            mtimeMs: row.mtimeMs,
+          );
+        }
       } catch (e) {
         log.warn('tracking', 'ingest failed ${row.localPath}: $e');
         await repository.markFailed(row.localPath);

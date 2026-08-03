@@ -268,3 +268,17 @@ abstract class FileCreateRequest with _$FileCreateRequest {
   factory FileCreateRequest.fromJson(Map<String, dynamic> json) =>
       _$FileCreateRequestFromJson(json);
 }
+
+/// Body for ``POST /v1/files/{file_id}/content`` (archive head + set new hash).
+@freezed
+abstract class FileContentRequest with _$FileContentRequest {
+  const factory FileContentRequest({
+    @JsonKey(name: 'content_hash') required String contentHash,
+    @JsonKey(name: 'hash_algo') @Default('blake3') String hashAlgo,
+    @JsonKey(name: 'size_bytes') required int sizeBytes,
+    String? note,
+  }) = _FileContentRequest;
+
+  factory FileContentRequest.fromJson(Map<String, dynamic> json) =>
+      _$FileContentRequestFromJson(json);
+}

@@ -123,7 +123,7 @@ Logical file row (current head metadata).
 | Column | Type | Notes |
 |---|---|---|
 | `file_id` | UUID PK | |
-| `content_hash` | TEXT NOT NULL | Hex digest |
+| `content_hash` | TEXT NOT NULL | Hex digest of current head. Soft-deleted rows store `tombstone:{file_id}:{hex}` so UNIQUE(`content_hash`) does not block re-ingest / content-replace under another `file_id`. API responses always expose the real hex. |
 | `hash_algo` | TEXT | `blake3` / `sha256` |
 | `mime_type` | TEXT | |
 | `size_bytes` | INTEGER | |
@@ -154,20 +154,22 @@ API responses may include computed `has_thumb` (not a DB column): `true` when `m
 
 **WhatsApp example:** phone deletes local media → phone availability becomes listed/absent → Linux `file_paths` still points at PC copy → user can pin and fetch by `content_hash`.
 
-### `versions` (optional but recommended soon)
+### `versions` (Milestone 8)
 
-When bytes change but you want history:
+When bytes change for the same logical file, archive the previous head:
 
 | Column | Type | Notes |
 |---|---|---|
 | `version_id` | UUID PK | |
-| `file_id` | UUID FK | |
-| `content_hash` | TEXT | |
+| `file_id` | UUID FK | Stable logical identity |
+| `content_hash` | TEXT | Previous head hash |
 | `size_bytes` | INTEGER | |
-| `created_at` | DATETIME | |
-| `note` | TEXT | |
+| `created_at` | DATETIME | When archived |
+| `note` | TEXT | Optional (e.g. phone edit) |
 
-v1 may keep only head on `files` and append versions when hash changes for same `file_id` (policy: same logical photo edited → new version; unrelated file → new `file_id`).
+Implemented in schema migration `004_versions.sql`. Current head stays on `files`; `POST /v1/files/{file_id}/content` appends a version then updates the head. Policy: same logical photo edited → new version under the same `file_id`; unrelated file → new `file_id`. History starts at first Homesync observation (no backfilled phantom versions).
+
+For **`.kdbx`**, divergent content may open a conflict outbox instead of immediately changing head — see Milestone 9 / `docs/sync-protocol.md` (KeePass conflict outbox). Candidate hashes are archived into `versions` on resolve.
 
 ### `tags` / `file_tags`
 

@@ -11,6 +11,7 @@ class CatalogBrowseDrawer extends StatelessWidget {
     this.onSelectBrowse,
     this.onToggleDeviceSynced,
     this.onOpenSettings,
+    this.onOpenConflicts,
   });
 
   final BrowseMode browseMode;
@@ -24,6 +25,7 @@ class CatalogBrowseDrawer extends StatelessWidget {
   })? onSelectBrowse;
   final ValueChanged<bool>? onToggleDeviceSynced;
   final VoidCallback? onOpenSettings;
+  final VoidCallback? onOpenConflicts;
 
   @override
   Widget build(BuildContext context) {
@@ -86,6 +88,15 @@ class CatalogBrowseDrawer extends StatelessWidget {
               onTap: () {
                 onSelectBrowse?.call(BrowseMode.removedFromPc);
                 Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.merge_type),
+              title: const Text('KeePass conflicts'),
+              subtitle: const Text('Outbox for divergent .kdbx'),
+              onTap: () {
+                Navigator.pop(context);
+                onOpenConflicts?.call();
               },
             ),
             const Divider(),

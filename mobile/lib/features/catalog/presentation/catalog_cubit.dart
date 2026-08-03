@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
+import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
@@ -611,6 +614,87 @@ class CatalogCubit extends Cubit<CatalogState> {
     final text = utf8.decode(bytes, allowMalformed: true);
     if (text.length <= maxChars) return text;
     return '${text.substring(0, maxChars)}…';
+  }
+
+  Future<List<KdbxConflict>> listKdbxConflicts({String? state = 'open'}) {
+    return api.listConflicts(state: state);
+  }
+
+  Future<String?> setKdbxSecret(String fileId, String password) async {
+    try {
+      await api.putKdbxSecret(fileId, password);
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'kdbx secret failed: $e');
+      return e.toString();
+    }
+  }
+
+  /// Hash + upload a resolved vault, then close the outbox.
+  Future<String?> resolveKdbxConflictWithFile({
+    required String conflictId,
+    required String fileId,
+    required String path,
+  }) async {
+    try {
+      final source = File(path);
+      if (!await source.exists()) return 'file missing';
+      final size = await source.length();
+      final hash = await ContentHash.blake3File(source);
+      await api.putBlobResumable(
+        algo: ContentHash.algo,
+        hexHash: hash,
+        contentLength: size,
+        readAt: (offset, length) async {
+          final raf = await source.open();
+          try {
+            await raf.setPosition(offset);
+            return await raf.read(length);
+          } finally {
+            await raf.close();
+          }
+        },
+      );
+      final updated = await api.resolveConflict(
+        conflictId,
+        FileContentRequest(
+          contentHash: hash,
+          hashAlgo: ContentHash.algo,
+          sizeBytes: size,
+          note: 'merged on phone',
+        ),
+      );
+      await repository.upsertFile(updated);
+      final tracked = await tracking.getLocalFile(path);
+      if (tracked != null) {
+        await tracking.markSynced(
+          localPath: path,
+          fileId: updated.fileId,
+          contentHash: updated.contentHash,
+          sizeBytes: updated.sizeBytes,
+        );
+      } else {
+        // Also update any tracked row bound to this file_id.
+        final all = await tracking.listTracked();
+        for (final row in all) {
+          if (row.fileId == fileId) {
+            await tracking.markSynced(
+              localPath: row.localPath,
+              fileId: updated.fileId,
+              contentHash: updated.contentHash,
+              sizeBytes: updated.sizeBytes,
+            );
+          }
+        }
+      }
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'kdbx resolve failed: $e');
+      return e.toString();
+    }
   }
 
   @override

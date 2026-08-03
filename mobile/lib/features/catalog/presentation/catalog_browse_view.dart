@@ -27,6 +27,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.progressBanner,
     this.onRefresh,
     this.onOpenSettings,
+    this.onOpenConflicts,
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
@@ -54,6 +55,7 @@ class CatalogBrowseView extends StatelessWidget {
   final Widget? progressBanner;
   final Future<void> Function()? onRefresh;
   final VoidCallback? onOpenSettings;
+  final VoidCallback? onOpenConflicts;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
@@ -107,6 +109,7 @@ class CatalogBrowseView extends StatelessWidget {
         onSelectBrowse: onSelectBrowse,
         onToggleDeviceSynced: onToggleDeviceSynced,
         onOpenSettings: onOpenSettings,
+        onOpenConflicts: onOpenConflicts,
       ),
       body: Column(
         children: [

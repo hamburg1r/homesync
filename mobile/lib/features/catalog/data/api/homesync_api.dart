@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:http/http.dart' as http;
 import 'package:injectable/injectable.dart';
@@ -81,6 +82,21 @@ class HomesyncApi {
 
   Uri _uri(String path, [Map<String, String>? query]) {
     return Uri.parse('$_baseUrl$path').replace(queryParameters: query);
+  }
+
+  /// Extract FastAPI ``detail`` string (or leave null) for error messages.
+  static String? _httpDetail(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final d = decoded['detail'];
+        if (d is String) return d;
+        if (d != null) return d.toString();
+      }
+    } catch (_) {}
+    final t = body.trim();
+    if (t.isEmpty) return null;
+    return t.length > 200 ? '${t.substring(0, 200)}…' : t;
   }
 
   Future<http.Response> _send(
@@ -575,6 +591,138 @@ class HomesyncApi {
     if (response.statusCode != 200) {
       throw HomesyncApiException(
         'file create failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// Archive current head and set a new content hash (blob must exist).
+  ///
+  /// Throws [KdbxConflictPendingException] on HTTP 202 (outbox opened).
+  Future<CatalogFile> updateFileContent(
+    String fileId,
+    FileContentRequest request,
+  ) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'POST /v1/files/$fileId/content',
+      _client.post(
+        _uri('/v1/files/$fileId/content'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(request.toJson()),
+      ),
+    );
+    if (response.statusCode == 202) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final conflictJson = body['conflict'] as Map<String, dynamic>;
+      throw KdbxConflictPendingException(KdbxConflict.fromJson(conflictJson));
+    }
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('file not found', statusCode: 404);
+    }
+    if (response.statusCode == 409) {
+      throw HomesyncApiException(
+        'content hash already used by another file',
+        statusCode: 409,
+      );
+    }
+    if (response.statusCode != 200) {
+      final detail = _httpDetail(response.body);
+      throw HomesyncApiException(
+        detail == null
+            ? 'file content update failed'
+            : 'file content update failed: $detail',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<void> putKdbxSecret(String fileId, String password) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'PUT /v1/files/$fileId/kdbx-secret',
+      _client.put(
+        _uri('/v1/files/$fileId/kdbx-secret'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'password': password}),
+      ),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('file not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'kdbx secret update failed',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  Future<List<KdbxConflict>> listConflicts({String? state = 'open'}) async {
+    refreshBaseUrlFromSettings();
+    final query = <String, String>{};
+    if (state != null) query['state'] = state;
+    final response = await _send(
+      'GET /v1/conflicts',
+      _client.get(_uri('/v1/conflicts', query.isEmpty ? null : query)),
+    );
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'list conflicts failed',
+        statusCode: response.statusCode,
+      );
+    }
+    final list = jsonDecode(response.body) as List<dynamic>;
+    return [
+      for (final e in list) KdbxConflict.fromJson(e as Map<String, dynamic>),
+    ];
+  }
+
+  Future<KdbxConflict> getConflict(String conflictId) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'GET /v1/conflicts/$conflictId',
+      _client.get(_uri('/v1/conflicts/$conflictId')),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('conflict not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'get conflict failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return KdbxConflict.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<CatalogFile> resolveConflict(
+    String conflictId,
+    FileContentRequest request,
+  ) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'POST /v1/conflicts/$conflictId/resolve',
+      _client.post(
+        _uri('/v1/conflicts/$conflictId/resolve'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(request.toJson()),
+      ),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('conflict not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'conflict resolve failed',
         statusCode: response.statusCode,
       );
     }

@@ -102,6 +102,8 @@ class LocalTrackedFiles extends Table {
   TextColumn get contentHash => text().nullable()();
   TextColumn get title => text().nullable()();
   IntColumn get sizeBytes => integer().withDefault(const Constant(0))();
+  /// Last observed mtime (ms since epoch); used to skip rehash when unchanged.
+  IntColumn get mtimeMs => integer().nullable()();
   TextColumn get mimeType => text().nullable()();
   TextColumn get sourceKind => text().withDefault(const Constant('misc'))();
   TextColumn get seenAt => text()();

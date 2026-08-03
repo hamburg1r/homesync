@@ -7,6 +7,7 @@ import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/local_blob_store.dart';
 import 'package:homesync_mobile/features/catalog/data/local_db/catalog_repository.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:injectable/injectable.dart';
@@ -144,6 +145,7 @@ class IngestService {
     String? mimeType,
     String sourceKind = 'misc',
     String? relativePath,
+    String? replaceFileId,
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -178,18 +180,25 @@ class IngestService {
       sourceKind: sourceKind,
       relativePath: relativePath,
       sourcePath: source.path,
+      replaceFileId: replaceFileId,
     );
     await queue.enqueue(item);
     return item;
   }
 
   /// Stream-hash + upload one file without loading it fully into RAM.
+  ///
+  /// When [replaceFileId] is set, uploads then ``POST …/content`` to keep the
+  /// same logical id. If [previousContentHash] matches the new digest, skips
+  /// the network and returns the local catalog row.
   Future<CatalogFile> ingestFile(
     File source, {
     String? title,
     String? mimeType,
     String sourceKind = 'misc',
     String? relativePath,
+    String? replaceFileId,
+    String? previousContentHash,
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -200,10 +209,41 @@ class IngestService {
       mimeType: mimeType,
       sourceKind: sourceKind,
       relativePath: relativePath,
+      replaceFileId: replaceFileId,
       index: index,
       total: total,
       onProgress: onProgress,
     );
+
+    if (replaceFileId != null &&
+        previousContentHash != null &&
+        item.contentHash == previousContentHash) {
+      await queue.remove(item.id);
+      final existing = await repository.getFile(replaceFileId);
+      if (existing != null) {
+        return existing.copyWith(
+          availabilityMode: AvailabilityMode.pinned,
+          hasLocalBytes: true,
+        );
+      }
+      // Local catalog lag — still no network needed for identical bytes.
+      return CatalogFile(
+        fileId: replaceFileId,
+        contentHash: item.contentHash,
+        hashAlgo: item.hashAlgo,
+        mimeType: item.mimeType,
+        sizeBytes: item.sizeBytes,
+        title: item.title,
+        notes: null,
+        takenAt: null,
+        createdAt: item.createdAt,
+        updatedAt: item.createdAt,
+        deletedAt: null,
+        tags: const [],
+        availabilityMode: AvailabilityMode.pinned,
+        hasLocalBytes: true,
+      );
+    }
 
     try {
       final file = await _flushItem(
@@ -331,18 +371,38 @@ class IngestService {
       ),
     );
 
-    final created = await api.createFile(
-      FileCreateRequest(
-        contentHash: item.contentHash,
-        hashAlgo: item.hashAlgo,
-        sizeBytes: item.sizeBytes,
-        mimeType: item.mimeType,
-        title: item.title,
-        sourceKind: item.sourceKind,
-        sourceDeviceId: deviceId,
-        relativePath: item.relativePath,
-      ),
-    );
+    late final CatalogFile created;
+    try {
+      created = item.replaceFileId != null
+          ? await api.updateFileContent(
+              item.replaceFileId!,
+              FileContentRequest(
+                contentHash: item.contentHash,
+                hashAlgo: item.hashAlgo,
+                sizeBytes: item.sizeBytes,
+                note: 'phone track',
+              ),
+            )
+          : await api.createFile(
+              FileCreateRequest(
+                contentHash: item.contentHash,
+                hashAlgo: item.hashAlgo,
+                sizeBytes: item.sizeBytes,
+                mimeType: item.mimeType,
+                title: item.title,
+                sourceKind: item.sourceKind,
+                sourceDeviceId: deviceId,
+                relativePath: item.relativePath,
+              ),
+            );
+    } on KdbxConflictPendingException {
+      log.warn(
+        'ingest',
+        'KeePass conflict outbox for ${item.replaceFileId} '
+        '(local hash ${item.contentHash})',
+      );
+      rethrow;
+    }
 
     await repository.upsertFile(created);
 

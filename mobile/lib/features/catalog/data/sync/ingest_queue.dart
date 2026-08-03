@@ -56,6 +56,7 @@ class IngestQueue {
     String sourceKind = 'misc',
     String? relativePath,
     String? sourcePath,
+    String? replaceFileId,
   }) {
     return IngestQueueItem(
       id: const Uuid().v4(),
@@ -67,6 +68,7 @@ class IngestQueue {
       sourceKind: sourceKind,
       relativePath: relativePath,
       sourcePath: sourcePath,
+      replaceFileId: replaceFileId,
       createdAt: DateTime.now().toUtc().toIso8601String(),
     );
   }
@@ -83,6 +85,7 @@ class IngestQueueItem {
     this.sourceKind = 'misc',
     this.relativePath,
     this.sourcePath,
+    this.replaceFileId,
     required this.createdAt,
   });
 
@@ -96,6 +99,8 @@ class IngestQueueItem {
   final String? relativePath;
   /// Absolute path for streamed retry when pin store was not filled yet.
   final String? sourcePath;
+  /// When set, upload replaces head via ``POST /files/{id}/content``.
+  final String? replaceFileId;
   final String createdAt;
 
   Map<String, dynamic> toJson() => {
@@ -108,6 +113,7 @@ class IngestQueueItem {
         'source_kind': sourceKind,
         'relative_path': relativePath,
         'source_path': sourcePath,
+        'replace_file_id': replaceFileId,
         'created_at': createdAt,
       };
 
@@ -122,6 +128,7 @@ class IngestQueueItem {
       sourceKind: json['source_kind'] as String? ?? 'misc',
       relativePath: json['relative_path'] as String?,
       sourcePath: json['source_path'] as String?,
+      replaceFileId: json['replace_file_id'] as String?,
       createdAt: json['created_at'] as String,
     );
   }

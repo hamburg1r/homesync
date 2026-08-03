@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from homesync_server.api.deps import get_session
@@ -12,14 +12,18 @@ from homesync_server.config import data_root
 from homesync_server.schemas.catalog import (
     AvailabilityOut,
     AvailabilityPutIn,
+    FileContentIn,
     FileCreateIn,
     FileOut,
     FilePatchIn,
     FileTagsPutIn,
+    FileVersionsOut,
+    KdbxContentResult,
     TagOut,
 )
 from homesync_server.services import availability as avail_svc
 from homesync_server.services import catalog as catalog_svc
+from homesync_server.services import kdbx_conflicts as kdbx_svc
 
 router = APIRouter(prefix="/v1", tags=["catalog"])
 
@@ -125,6 +129,66 @@ def delete_file(file_id: str, session: SessionDep) -> FileOut:
     except catalog_svc.NotFoundError as exc:
         raise HTTPException(status_code=404, detail="file not found") from exc
     return catalog_svc.file_to_out(row)
+
+
+@router.post(
+    "/files/{file_id}/content",
+    response_model=FileOut | KdbxContentResult,
+    responses={202: {"model": KdbxContentResult}},
+)
+def update_file_content(
+    file_id: str,
+    body: FileContentIn,
+    session: SessionDep,
+    request: Request,
+    response: Response,
+) -> FileOut | KdbxContentResult:
+    """Archive current head and set a new content hash (blob must exist).
+
+    For ``.kdbx`` files, a real semantic conflict returns **202** with an
+    outbox payload instead of changing the catalog head.
+    """
+    _ = request
+    try:
+        outcome = kdbx_svc.apply_kdbx_content(
+            session,
+            data_root(),
+            file_id,
+            content_hash=body.content_hash,
+            hash_algo=body.hash_algo,
+            size_bytes=body.size_bytes,
+            note=body.note,
+        )
+    except catalog_svc.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="file not found") from exc
+    except catalog_svc.IngestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except catalog_svc.CatalogConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "content hash already used by another file",
+                "file": catalog_svc.file_to_out(exc.file_row).model_dump(),
+            },
+        ) from exc
+
+    if outcome.kind == "conflict" and outcome.conflict is not None:
+        response.status_code = 202
+        return KdbxContentResult(
+            status="conflict",
+            conflict=kdbx_svc.conflict_to_out(outcome.conflict),
+            file=None,
+        )
+    assert outcome.file is not None
+    return catalog_svc.file_to_out(outcome.file)
+
+
+@router.get("/files/{file_id}/versions", response_model=FileVersionsOut)
+def get_file_versions(file_id: str, session: SessionDep) -> FileVersionsOut:
+    try:
+        return catalog_svc.list_file_versions(session, file_id)
+    except catalog_svc.NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="file not found") from exc
 
 
 @router.put("/files/{file_id}/tags", response_model=FileOut)

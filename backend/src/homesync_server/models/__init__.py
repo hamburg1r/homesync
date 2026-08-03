@@ -64,6 +64,63 @@ class File(Base):
     availability_rows: Mapped[list[Availability]] = relationship(
         back_populates="file"
     )
+    versions: Mapped[list[FileVersion]] = relationship(back_populates="file")
+
+
+class FileVersion(Base):
+    """Archived head under a stable ``file_id`` (current head stays on ``files``)."""
+
+    __tablename__ = "versions"
+
+    version_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("files.file_id"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    file: Mapped[File] = relationship(back_populates="versions")
+
+
+class KdbxConflict(Base):
+    __tablename__ = "kdbx_conflicts"
+
+    conflict_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("files.file_id"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+    diff_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_content_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    candidates: Mapped[list[KdbxConflictCandidate]] = relationship(
+        back_populates="conflict"
+    )
+
+
+class KdbxConflictCandidate(Base):
+    __tablename__ = "kdbx_conflict_candidates"
+    __table_args__ = (
+        UniqueConstraint("conflict_id", "content_hash", name="ux_kdbx_cand_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conflict_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("kdbx_conflicts.conflict_id"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_device_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("devices.device_id"), nullable=True
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    conflict: Mapped[KdbxConflict] = relationship(back_populates="candidates")
 
 
 class FilePath(Base):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -68,6 +70,69 @@ class FileCreateIn(BaseModel):
 
 class FileTagsPutIn(BaseModel):
     tags: list[str]
+
+
+class FileContentIn(BaseModel):
+    """Replace file head after new bytes are in the managed blob store."""
+
+    content_hash: str = Field(..., min_length=4)
+    hash_algo: str = Field(default="blake3", min_length=1)
+    size_bytes: int = Field(..., ge=0)
+    note: str | None = None
+
+
+class FileVersionOut(BaseModel):
+    version_id: str
+    file_id: str
+    content_hash: str
+    size_bytes: int
+    created_at: str
+    note: str | None = None
+    is_head: bool = False
+
+
+class FileVersionsOut(BaseModel):
+    file_id: str
+    head: FileVersionOut
+    versions: list[FileVersionOut] = Field(default_factory=list)
+
+
+class KdbxSecretIn(BaseModel):
+    password: str = Field(..., min_length=1)
+
+
+class KdbxConflictCandidateOut(BaseModel):
+    content_hash: str
+    size_bytes: int
+    source_device_id: str | None = None
+    role: str
+    created_at: str
+
+
+class KdbxConflictOut(BaseModel):
+    conflict_id: str
+    file_id: str
+    state: str
+    created_at: str
+    updated_at: str
+    diff_summary: dict[str, Any] | None = None
+    resolved_content_hash: str | None = None
+    candidates: list[KdbxConflictCandidateOut] = Field(default_factory=list)
+
+
+class KdbxContentResult(BaseModel):
+    """Returned with HTTP 202 when a kdbx content update opens/updates an outbox."""
+
+    status: str = "conflict"
+    conflict: KdbxConflictOut
+    file: FileOut | None = None
+
+
+class KdbxResolveIn(BaseModel):
+    content_hash: str = Field(..., min_length=4)
+    hash_algo: str = Field(default="blake3", min_length=1)
+    size_bytes: int = Field(..., ge=0)
+    note: str | None = None
 
 
 class AvailabilityOut(BaseModel):

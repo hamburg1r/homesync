@@ -14,6 +14,8 @@ flowchart LR
   S4 --> S5[5 Phone ingest]
   S5 --> S6[6 Ghost restore UX]
   S6 --> S7[7 Thumbs + search]
+  S7 --> S8[8 Content versions]
+  S8 --> S9[9 KeePass conflicts]
 ```
 
 ## Milestone 0 — Scaffolding (done)
@@ -116,6 +118,32 @@ flowchart LR
 
 **E2E:** `backend/tests/scenarios/test_thumbs_search.py`. Flutter: `mobile/test/scenarios/thumbs_search_test.dart`.
 
+## Milestone 8 — Content versions (done)
+
+**Outcome:** Same logical `file_id` can change bytes; previous head is archived; phone tracking re-uploads edits without minting a new id.
+
+- [x] `versions` table + migration `004`
+- [x] `POST /v1/files/{file_id}/content` + `GET /v1/files/{file_id}/versions`
+- [x] Phone: mtime/size gate on tracked paths → rehash → content replace when bound
+- [x] Scenario E2E (backend + Flutter)
+
+**Exit check:** Content replace keeps `file_id`, archives old hash, catalog delta shows new head; bound phone path hash change does not create a second `file_id`.
+
+**E2E:** `backend/tests/scenarios/test_content_versions.py`. Flutter: `mobile/test/scenarios/content_versions_test.dart`.
+
+## Milestone 9 — KeePass conflicts (done)
+
+**Outcome:** Divergent `.kdbx` uploads keep both hashes; trivial semantic diffs auto-resolve; real diffs open a multi-candidate outbox; phone uploads resolved `AB`.
+
+- [x] Port semantic diff + `pykeepass` via uv
+- [x] `kdbx_conflicts` / candidates migration; local secrets file; `PUT …/kdbx-secret`
+- [x] kdbx-aware `POST …/content` (202 outbox) + resolve API
+- [x] Phone outbox UI + scenario tests
+
+**Exit check:** Trivial rewrite auto-promotes head with no open conflict; real password-field conflict returns 202; resolve sets single head and closes outbox.
+
+**E2E:** `backend/tests/scenarios/test_kdbx_conflicts.py`. Flutter: `mobile/test/scenarios/kdbx_conflicts_test.dart`.
+
 ## Testing / AI guardrails
 
 Two phone-free loops:
@@ -198,3 +226,5 @@ Record important choices here as they happen.
 | 2026-08-03 | Background ingest + Android `dataSync` FG service | Refresh must not wait for uploads; survive app background |
 | 2026-08-03 | Ingest HTTP runs in FG task isolate (not UI isolate) | Home paused UI isolate and aborted sockets mid-upload |
 | 2026-08-03 | FG task: HTTP-only jobs; main owns Drift/queue | Dual-isolate DI/Drift caused `flush failed` |
+| 2026-08-03 | Milestone 8: head+history versions under stable `file_id`; not file↔file links | Path is local binding only; history starts at first observation; `POST …/content` archives old head |
+| 2026-08-03 | Milestone 9: kdbx conflict outbox; daemon secret for trivial semantic auto-diff; collision = bound `file_id` only | Phone interactive resolve for real entry diffs; Bound-to-server unrelated |

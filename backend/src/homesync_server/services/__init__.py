@@ -12,12 +12,14 @@ from homesync_server.services.catalog import (
     create_file,
     file_to_out,
     get_file,
+    list_file_versions,
     list_files,
     list_tags,
     patch_file,
     set_file_tags,
     soft_delete_file,
     tag_to_out,
+    update_file_content,
 )
 
 __all__ = [
@@ -28,10 +30,12 @@ __all__ = [
     "create_file",
     "file_to_out",
     "get_file",
+    "list_file_versions",
     "list_files",
     "list_tags",
     "patch_file",
     "set_file_tags",
     "soft_delete_file",
     "tag_to_out",
+    "update_file_content",
 ]

@@ -137,7 +137,7 @@ PATCH /v1/files/{file_id}
   "updated_at": "client-time",
   "base_updated_at": "last-seen-server-time"
 }
-DELETE /v1/files/{file_id}   # soft-delete (sets deleted_at)
+DELETE /v1/files/{file_id}   # soft-delete (sets deleted_at; frees UNIQUE content_hash via tombstone: sentinel)
 GET /v1/tags
 PUT /v1/files/{file_id}/tags
 { "tags": ["family", "receipts"] }
@@ -148,6 +148,56 @@ PUT /v1/files/{file_id}/tags
 **LWW v1:** if `base_updated_at` is sent and does not match the server row, respond `409` with the current file. If `updated_at` is sent and is older than the stored value, also `409`. Otherwise accept and bump `updated_at` (strictly monotonic on the server when the client omits it).
 
 Manual curl smoke: `scripts/metadata_api_smoke.sh` (daemon on `127.0.0.1:8787`, catalog already indexed).
+
+## Content versions (head + history)
+
+Implemented (Milestone 8):
+
+```http
+POST /v1/files/{file_id}/content
+{
+  "content_hash": "…",
+  "hash_algo": "blake3",
+  "size_bytes": 1234,
+  "note": "optional"
+}
+GET /v1/files/{file_id}/versions
+```
+
+- Requires the new blob in the managed store first (same as ingest).
+- Same hash as current head → idempotent no-op.
+- Otherwise archives the previous head into `versions`, sets `files.content_hash` / `size_bytes`, bumps `updated_at` (delta clients see the new head under the same `file_id`).
+- New hash already used as another file's head → `409` (never merge logical files).
+- Soft-deleted file → `400`.
+- `GET …/versions` returns `{ file_id, head, versions }` where `head` is the current tip (`is_head: true`) and `versions` lists archived heads newest-first.
+
+Phone tracking: when a bound `localPath` changes bytes (mtime/size gate, then rehash), upload the new blob and `POST …/content` instead of creating a new `file_id`.
+
+## KeePass (.kdbx) conflict outbox
+
+Implemented (Milestone 9):
+
+When `POST /v1/files/{file_id}/content` targets a KeePass vault (title/path ends in `.kdbx` or keepass mime) and the hash differs from head:
+
+1. Both blobs are retained; catalog **head is not changed** until resolve (or trivial auto-resolve).
+2. Daemon unlocks both with a per-`file_id` secret (`PUT /v1/files/{file_id}/kdbx-secret`) and runs a semantic entry/group diff (ported from `diffkpdb`).
+3. **Trivial** (identical entry fields — typical rewrite/mtime noise) → auto-promote incoming head; **no client outbox**.
+4. **Real** diffs → HTTP **202** + conflict payload; open outbox.
+5. Extra divergent uploads while open are queued as more **candidates**.
+6. Phone merges offline, uploads `AB`, then `POST /v1/conflicts/{id}/resolve`.
+
+```http
+PUT  /v1/files/{file_id}/kdbx-secret
+{ "password": "…" }
+GET  /v1/conflicts?state=open
+GET  /v1/conflicts/{conflict_id}
+POST /v1/conflicts/{conflict_id}/resolve
+{ "content_hash": "…", "hash_algo": "blake3", "size_bytes": N, "note": "merged on phone" }
+```
+
+Secrets live in `~/.config/homesync/kdbx_secrets.json` (or `$HOMESYNC_KDBX_SECRETS`), mode `0600` — **not** in catalog SQLite. Diff summaries are redacted (field names / entry paths only, never password values).
+
+Phone: drawer → **KeePass conflicts**; tracking does **not** require Bound to server.
 
 ## Thumbnails (listed-mode previews)
 
@@ -268,8 +318,9 @@ Provenance rows explain *why* it still exists (“imported from WhatsApp backup 
 | Tag edit on phone + PC | LWW by `updated_at` |
 | Title edit both sides | LWW |
 | Same file pinned on phone, deleted on PC catalog | Tombstone wins if `deleted_at` newer; else keep and mark degraded |
-| Two different byte payloads claimed as same `file_id` | Reject; create new version or new file_id — never merge bytes |
-| Upload hash already exists | Dedup; attach path/provenance |
+| Two different byte payloads claimed as same `file_id` | Archive old head in `versions`, set new head — never merge bytes |
+| Upload hash already exists as another file's head | Dedup on create; `409` on content replace |
+| Upload hash already exists (create) | Dedup; attach path/provenance |
 
 ## Auth (planned)
 
