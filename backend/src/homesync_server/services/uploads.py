@@ -137,16 +137,19 @@ def begin_upload(
     dest = blob_path(data_root, algo_norm, digest)
     uid = upload_id_for(algo_norm, digest)
     if dest.is_file() and dest.stat().st_size == size_bytes:
-        if hash_file(dest, algo=algo_norm) == digest:
-            return UploadSession(
-                upload_id=uid,
-                algo=algo_norm,
-                content_hash=digest,
-                size_bytes=size_bytes,
-                offset=size_bytes,
-                last_activity=_now_iso(),
-                complete=True,
-            )
+        # CAS path is already keyed by digest; trust size match for the
+        # fast dedup path. Full re-hash here blocked phone clients on the
+        # default 15s HTTP timeout for large blobs. Finalize still verifies
+        # newly uploaded partials.
+        return UploadSession(
+            upload_id=uid,
+            algo=algo_norm,
+            content_hash=digest,
+            size_bytes=size_bytes,
+            offset=size_bytes,
+            last_activity=_now_iso(),
+            complete=True,
+        )
 
     udir = upload_dir(data_root, algo_norm, digest)
     if _meta_path(udir).is_file():

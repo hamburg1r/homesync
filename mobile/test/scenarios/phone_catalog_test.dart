@@ -1,9 +1,12 @@
 /// Milestone 3 client exit check: device hello + delta sync into Drift mirror.
 library;
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -202,5 +205,72 @@ void main() {
     expect(SettingsStore.validateBaseUrl('ftp://x'), isNotNull);
     expect(SettingsStore.validateBaseUrl('not-a-url'), isNotNull);
     expect(SettingsStore.validateBaseUrl('http://10.0.2.2:8787'), isNull);
+  });
+
+  test('listActiveFiles tolerates multiple origin paths for one file_id',
+      () async {
+    harness = await TestCatalogHarness.open(
+      MockClient((request) async {
+        if (request.method == 'POST') return deviceOkResponse();
+        return http.Response(
+          '''
+{
+  "next_cursor": "v1:a|f1",
+  "files": [${catalogFileJson(id: 'f1', title: 'dup.txt', updatedAt: 'a')}],
+  "tags": [],
+  "file_tags": [],
+  "paths": [],
+  "availability": []
+}
+''',
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    expect((await harness.sync.sync()).ok, isTrue);
+
+    final a = File('${harness.scanRoot.path}/a/dup.txt')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('copy-a');
+    final b = File('${harness.scanRoot.path}/b/dup.txt')
+      ..parent.createSync(recursive: true)
+      ..writeAsStringSync('copy-b');
+
+    await harness.tracking.upsertLocalFile(
+      LocalTrackedFile(
+        localPath: a.path,
+        fileId: 'f1',
+        contentHash: 'hash-f1',
+        title: 'dup.txt',
+        sizeBytes: 6,
+        sourceKind: 'download',
+        seenAt: '2026-08-01T00:00:00Z',
+        ingestStatus: IngestStatus.synced,
+      ),
+    );
+    await harness.tracking.upsertLocalFile(
+      LocalTrackedFile(
+        localPath: b.path,
+        fileId: 'f1',
+        contentHash: 'hash-f1',
+        title: 'dup.txt',
+        sizeBytes: 6,
+        sourceKind: 'download',
+        seenAt: '2026-08-02T00:00:00Z',
+        ingestStatus: IngestStatus.synced,
+      ),
+    );
+
+    // Regression: getSingleOrNull threw "Too many elements" and emptied home.
+    final listed = await harness.repository.listActiveFiles();
+    expect(listed, hasLength(1));
+    expect(listed.single.fileId, 'f1');
+    expect(listed.single.hasLocalBytes, isTrue);
+
+    final origins = await harness.repository.originPathsForFileId('f1');
+    expect(origins.toSet(), {a.path, b.path});
+    expect(await harness.repository.originPathForFileId('f1'), isNotNull);
   });
 }

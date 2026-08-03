@@ -283,8 +283,7 @@ class CatalogRepository {
       contentHash: file.contentHash,
       exceptFileId: file.fileId,
     );
-    final origin = await originPathForFileId(file.fileId);
-    if (origin != null) {
+    for (final origin in await originPathsForFileId(file.fileId)) {
       final originFile = File(origin);
       if (await originFile.exists()) {
         await originFile.delete();
@@ -359,12 +358,26 @@ class CatalogRepository {
     return row?.deleteOnTombstone ?? false;
   }
 
-  /// Absolute path of a phone-origin file (tracking), if still on disk.
+  /// All phone-origin paths for [fileId] (newest [seenAt] first).
+  ///
+  /// `local_tracked_files` is keyed by path, so one catalog file can have
+  /// several origins (copies / re-scans). Never use getSingle* here.
+  Future<List<String>> originPathsForFileId(String fileId) async {
+    final rows = await (_db.select(_db.localTrackedFiles)
+          ..where((t) => t.fileId.equals(fileId))
+          ..orderBy([(t) => OrderingTerm.desc(t.seenAt)]))
+        .get();
+    return [for (final row in rows) row.localPath];
+  }
+
+  /// Preferred phone-origin path: an existing file, else newest tracked path.
   Future<String?> originPathForFileId(String fileId) async {
-    final row = await (_db.select(_db.localTrackedFiles)
-          ..where((t) => t.fileId.equals(fileId)))
-        .getSingleOrNull();
-    return row?.localPath;
+    final paths = await originPathsForFileId(fileId);
+    if (paths.isEmpty) return null;
+    for (final path in paths) {
+      if (await File(path).exists()) return path;
+    }
+    return paths.first;
   }
 
   /// Best catalog relative path for display (provenance), if mirrored.

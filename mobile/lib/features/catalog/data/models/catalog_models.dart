@@ -30,6 +30,9 @@ enum LocalUploadState {
   failed,
 }
 
+/// Freezed lists are unmodifiable; copy so toJson is isolate-safe.
+List<String> _tagsToJson(List<String> tags) => List<String>.from(tags);
+
 /// Catalog listing DTOs. Display [CatalogFile.title] may differ from any
 /// on-device path or PC `file_paths.relative_path` basename.
 @freezed
@@ -48,7 +51,7 @@ abstract class CatalogFile with _$CatalogFile {
     @JsonKey(name: 'created_at') required String createdAt,
     @JsonKey(name: 'updated_at') required String updatedAt,
     @JsonKey(name: 'deleted_at') String? deletedAt,
-    @Default([]) List<String> tags,
+    @JsonKey(toJson: _tagsToJson) @Default([]) List<String> tags,
     /// Server hint: ``GET /v1/thumbs/{file_id}`` may return a small JPEG.
     @JsonKey(name: 'has_thumb') @Default(false) bool hasThumb,
     /// Local join — not part of server file JSON.

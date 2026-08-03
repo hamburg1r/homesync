@@ -29,6 +29,7 @@ class DeviceScanner {
   ///
   /// [onIndexed] runs after the local index is updated and before uploads,
   /// so the UI can show `pending` rows while ingest is in flight.
+  /// [onProgress] receives `scanning` updates while walking storage.
   Future<ScanResult> scanAndIngest({
     bool ingestMatches = true,
     IngestProgressCallback? onProgress,
@@ -39,6 +40,16 @@ class DeviceScanner {
       log.info('tracking', 'no rules — skip scan');
       return const ScanResult(seen: 0, tracked: 0, ingested: 0);
     }
+
+    onProgress?.call(
+      const IngestFileProgress(
+        title: 'device storage',
+        index: 0,
+        total: 0,
+        phase: 'scanning',
+        fraction: 0,
+      ),
+    );
 
     await _ensurePermission();
     final roots = await _resolveRoots(rules);
@@ -58,6 +69,27 @@ class DeviceScanner {
     var seen = 0;
     var tracked = 0;
     final seenPaths = <String>{};
+    var lastScanReport = DateTime.fromMillisecondsSinceEpoch(0);
+
+    void reportScan() {
+      final nowLocal = DateTime.now();
+      if (seen > 0 &&
+          nowLocal.difference(lastScanReport) < const Duration(milliseconds: 250)) {
+        return;
+      }
+      lastScanReport = nowLocal;
+      onProgress?.call(
+        IngestFileProgress(
+          title: tracked > 0
+              ? '$seen files ($tracked tracked)'
+              : '$seen files',
+          index: seen,
+          total: 0,
+          phase: 'scanning',
+          fraction: 0,
+        ),
+      );
+    }
 
     Future<void> consider({
       required String path,
@@ -101,6 +133,7 @@ class DeviceScanner {
           ),
         );
       }
+      reportScan();
     }
 
     for (final root in roots) {
@@ -133,6 +166,18 @@ class DeviceScanner {
       await consider(path: path, sizeBytes: size, matched: rule);
     }
 
+    onProgress?.call(
+      IngestFileProgress(
+        title: tracked > 0
+            ? '$seen files ($tracked tracked)'
+            : '$seen files',
+        index: seen,
+        total: 0,
+        phase: 'scanning',
+        fraction: 1,
+      ),
+    );
+
     var ingested = 0;
     if (onIndexed != null) {
       await onIndexed();
@@ -146,6 +191,23 @@ class DeviceScanner {
       'scan seen=$seen tracked=$tracked ingested=$ingested',
     );
     return ScanResult(seen: seen, tracked: tracked, ingested: ingested);
+  }
+
+  /// Pending tracked files that are not already in the durable ingest queue.
+  ///
+  /// Used to hand path+metadata to the FG task isolate (hash runs there so
+  /// backgrounding the UI does not pause prepare).
+  Future<List<LocalTrackedFile>> listPendingNotQueued() async {
+    final pending = await repository.listNeedingIngest();
+    if (pending.isEmpty) return const [];
+    final queuedPaths = {
+      for (final item in await ingest.queue.list())
+        if (item.sourcePath != null) item.sourcePath!,
+    };
+    return [
+      for (final row in pending)
+        if (!queuedPaths.contains(row.localPath)) row,
+    ];
   }
 
   /// Hash pending/failed tracked files into the durable ingest queue (no upload).
@@ -165,8 +227,18 @@ class DeviceScanner {
     final total = pending.length;
     for (var i = 0; i < total; i++) {
       final row = pending[i];
+      final display = row.title ?? p.basename(row.localPath);
       if (alreadyQueued.contains(row.localPath)) {
         enqueued += 1;
+        onProgress?.call(
+          IngestFileProgress(
+            title: display,
+            index: i + 1,
+            total: total,
+            phase: 'hashing',
+            fraction: 1,
+          ),
+        );
         continue;
       }
       try {

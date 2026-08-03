@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
+import 'package:homesync_mobile/features/catalog/data/content_hash.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
@@ -11,12 +12,13 @@ import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:injectable/injectable.dart';
+import 'package:path/path.dart' as p;
+import 'package:uuid/uuid.dart';
 
 /// Top-level callback required by [FlutterForegroundTask.startService].
 ///
-/// Upload HTTP runs **here** (task isolate) with jobs prepared by the main
-/// isolate. Do **not** open Drift / SharedPreferences here — dual-isolate DB
-/// access caused flush failures; main owns catalog writes.
+/// Hash + upload run **here** (task isolate). Main only lists pending paths
+/// and commits results — so work continues while the app is backgrounded.
 @pragma('vm:entry-point')
 void homesyncIngestTaskCallback() {
   FlutterForegroundTask.setTaskHandler(HomesyncIngestTaskHandler());
@@ -32,7 +34,13 @@ class HomesyncIngestTaskHandler extends TaskHandler {
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    // Without this, main waits forever on `_taskDone` and kick() never runs again.
+    FlutterForegroundTask.sendDataToMain({
+      'type': 'error',
+      'message': isTimeout ? 'FG service timed out' : 'FG service stopped',
+    });
+  }
 
   @override
   void onReceiveData(Object data) {
@@ -58,21 +66,31 @@ class HomesyncIngestTaskHandler extends TaskHandler {
     );
     try {
       final deviceId = payload['deviceId'] as String? ?? '';
-      final rawJobs = payload['jobs'] as List<dynamic>? ?? const [];
-      final jobs = rawJobs
-          .map((e) => IngestQueueItem.fromJson(Map<String, dynamic>.from(e as Map)))
-          .toList();
+      final jobs = [
+        for (final e in payload['jobs'] as List<dynamic>? ?? const [])
+          IngestQueueItem.fromJson(Map<String, dynamic>.from(e as Map)),
+      ];
+      final toHash = [
+        for (final e in payload['pending'] as List<dynamic>? ?? const [])
+          IngestQueueItem.fromJson(Map<String, dynamic>.from(e as Map)),
+      ];
+      final needHashIds = {for (final i in toHash) i.id};
+      final work = [...jobs, ...toHash];
 
-      for (var i = 0; i < jobs.length; i++) {
-        final item = jobs[i];
+      for (var i = 0; i < work.length; i++) {
+        var item = work[i];
         try {
+          if (needHashIds.contains(item.id)) {
+            item = await _hashItem(item, index: i + 1, total: work.length);
+          }
           final result = await _uploadOne(
             api: api,
             item: item,
             deviceId: deviceId,
             index: i + 1,
-            total: jobs.length,
+            total: work.length,
           );
+          // CatalogFile.toJson copies tags to a plain List (isolate-safe).
           FlutterForegroundTask.sendDataToMain({
             'type': 'item_ok',
             'id': item.id,
@@ -85,7 +103,6 @@ class HomesyncIngestTaskHandler extends TaskHandler {
             'id': item.id,
             'message': e.toString(),
           });
-          // Stop the batch on first failure (matches flushPending).
           break;
         }
       }
@@ -103,6 +120,55 @@ class HomesyncIngestTaskHandler extends TaskHandler {
         await FlutterForegroundTask.stopService();
       } catch (_) {}
     }
+  }
+
+  Future<IngestQueueItem> _hashItem(
+    IngestQueueItem item, {
+    required int index,
+    required int total,
+  }) async {
+    final sourcePath = item.sourcePath;
+    if (sourcePath == null || sourcePath.isEmpty) {
+      throw IngestException('missing source_path for hash ${item.id}');
+    }
+    final file = File(sourcePath);
+    if (!await file.exists()) {
+      throw IngestException('file missing: $sourcePath');
+    }
+    final display = item.title ?? p.basename(sourcePath);
+    final hash = await ContentHash.blake3File(
+      file,
+      onProgress: (done, totalBytes) {
+        final fraction = totalBytes == 0 ? 1.0 : done / totalBytes;
+        FlutterForegroundTask.sendDataToMain({
+          'type': 'progress',
+          'title': display,
+          'index': index,
+          'total': total,
+          'phase': 'hashing',
+          'fraction': fraction,
+        });
+        unawaited(
+          FlutterForegroundTask.updateService(
+            notificationTitle: 'Homesync preparing',
+            notificationText:
+                'Hashing $index/$total: $display (${(fraction * 100).round()}%)',
+          ),
+        );
+      },
+    );
+    return IngestQueueItem(
+      id: item.id,
+      contentHash: hash,
+      hashAlgo: ContentHash.algo,
+      sizeBytes: await file.length(),
+      mimeType: item.mimeType,
+      title: item.title,
+      sourceKind: item.sourceKind,
+      relativePath: item.relativePath,
+      sourcePath: item.sourcePath,
+      createdAt: item.createdAt,
+    );
   }
 
   Future<({CatalogFile file, AvailabilityInfo availability})> _uploadOne({
@@ -124,6 +190,21 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       );
     }
 
+    FlutterForegroundTask.sendDataToMain({
+      'type': 'progress',
+      'title': display,
+      'index': index,
+      'total': total,
+      'phase': 'uploading',
+      'fraction': 0.0,
+    });
+    unawaited(
+      FlutterForegroundTask.updateService(
+        notificationTitle: 'Homesync uploading',
+        notificationText: 'Uploading $index/$total: $display (0%)',
+      ),
+    );
+
     await api.putBlobResumable(
       algo: item.hashAlgo,
       hexHash: item.contentHash,
@@ -138,18 +219,20 @@ class HomesyncIngestTaskHandler extends TaskHandler {
         }
       },
       onProgress: (sent, totalBytes) {
+        final fraction = totalBytes == 0 ? 1.0 : sent / totalBytes;
         FlutterForegroundTask.sendDataToMain({
           'type': 'progress',
           'title': display,
           'index': index,
           'total': total,
           'phase': 'uploading',
-          'fraction': totalBytes == 0 ? 1.0 : sent / totalBytes,
+          'fraction': fraction,
         });
         unawaited(
           FlutterForegroundTask.updateService(
             notificationTitle: 'Homesync uploading',
-            notificationText: '$index/$total: $display',
+            notificationText:
+                'Uploading $index/$total: $display (${(fraction * 100).round()}%)',
           ),
         );
       },
@@ -207,15 +290,16 @@ void initBackgroundIngestService() {
       allowWakeLock: true,
       allowWifiLock: true,
       allowAutoRestart: true,
-      stopWithTask: true,
+      // Keep hash/upload alive after Home; we stopService when the batch ends.
+      stopWithTask: false,
     ),
   );
 }
 
 /// Runs phone→PC ingest without blocking catalog refresh / UI.
 ///
-/// On Android, HTTP runs in the `dataSync` task isolate with jobs prepared on
-/// the main isolate (hash + queue + Drift commits stay on main).
+/// On Android, hash + HTTP run in the `dataSync` task isolate. Main only lists
+/// pending paths (Drift) and commits catalog rows when each item finishes.
 @lazySingleton
 class BackgroundIngestRunner {
   BackgroundIngestRunner({
@@ -236,12 +320,62 @@ class BackgroundIngestRunner {
 
   Future<void>? _inFlight;
   Completer<void>? _taskDone;
+  /// True after work was handed to the task isolate.
+  bool _waitingOnTaskIsolate = false;
   IngestProgressCallback? _onProgress;
   Future<void> Function()? _onFinished;
   Map<String, IngestQueueItem> _jobsById = {};
   Future<void> _commitChain = Future<void>.value();
+  DateTime? _lastNotificationUpdate;
+  String? _lastNotificationText;
 
   bool get isRunning => _inFlight != null;
+
+  /// Mirror prepare/hash/upload progress into the FG notification text.
+  Future<void> updateKeepAliveProgress(IngestFileProgress p) async {
+    if (!Platform.isAndroid) return;
+    final text = switch (p.phase) {
+      'scanning' => p.index > 0
+          ? 'Scanning… ${p.title}'
+          : 'Scanning device storage…',
+      'preparing' => p.title,
+      'hashing' => p.total > 0
+          ? 'Hashing ${p.index}/${p.total}: ${p.title} (${(p.fraction * 100).round()}%)'
+          : 'Hashing: ${p.title}',
+      'uploading' => p.total > 0
+          ? 'Uploading ${p.index}/${p.total}: ${p.title} (${(p.fraction * 100).round()}%)'
+          : 'Uploading: ${p.title}',
+      'finishing' => 'Finishing ${p.index}/${p.total}: ${p.title}',
+      _ => '${p.phaseLabel} ${p.index}/${p.total}: ${p.title}',
+    };
+    final title = switch (p.phase) {
+      'scanning' => 'Homesync scanning',
+      'preparing' || 'hashing' => 'Homesync preparing',
+      'uploading' => 'Homesync uploading',
+      'finishing' => 'Homesync uploading',
+      _ => 'Homesync syncing',
+    };
+    final now = DateTime.now();
+    if (text == _lastNotificationText) return;
+    final due = _lastNotificationUpdate == null ||
+        now.difference(_lastNotificationUpdate!) >=
+            const Duration(milliseconds: 400) ||
+        p.phase == 'finishing' ||
+        p.fraction >= 0.999 ||
+        p.phase == 'scanning';
+    if (!due) return;
+    _lastNotificationUpdate = now;
+    _lastNotificationText = text;
+    try {
+      if (!await FlutterForegroundTask.isRunningService) return;
+      await FlutterForegroundTask.updateService(
+        notificationTitle: title,
+        notificationText: text,
+      );
+    } catch (e) {
+      log.warn('ingest', 'notification update failed: $e');
+    }
+  }
 
   void _onTaskData(Object data) {
     if (data is! Map) return;
@@ -304,18 +438,20 @@ class BackgroundIngestRunner {
           contentHash: created.contentHash,
         );
       }
-      log.info('ingest', 'ingested ${created.fileId} (${item.title ?? item.contentHash})');
+      log.info(
+        'ingest',
+        'ingested ${created.fileId} (${item.title ?? created.contentHash})',
+      );
     } catch (e) {
       log.warn('ingest', 'commit after upload failed for $id: $e');
     }
   }
 
   /// Start the Android FG keep-alive while still in the foreground.
-  ///
-  /// Call at the beginning of refresh so Home during scan/upload is covered.
   Future<void> ensureKeepAlive() async {
     if (!Platform.isAndroid) return;
     await _requestNotificationPermission();
+    await _requestBatteryOptimizationExemption();
     if (await FlutterForegroundTask.isRunningService) return;
     final result = await FlutterForegroundTask.startService(
       serviceId: 1101,
@@ -343,6 +479,24 @@ class BackgroundIngestRunner {
     return _inFlight!;
   }
 
+  /// Call on app resume. If the FG service died mid-upload, unlock so [kick]
+  /// can run again.
+  Future<void> recoverAfterResume() async {
+    final inflight = _inFlight;
+    final done = _taskDone;
+    if (inflight == null ||
+        done == null ||
+        done.isCompleted ||
+        !_waitingOnTaskIsolate) {
+      return;
+    }
+    if (await FlutterForegroundTask.isRunningService) return;
+
+    log.warn('ingest', 'FG service stopped in background — unlocking stuck batch');
+    done.complete();
+    await inflight;
+  }
+
   Future<void> _runViaTaskIsolate({
     IngestProgressCallback? onProgress,
     Future<void> Function()? onFinished,
@@ -361,32 +515,58 @@ class BackgroundIngestRunner {
         return;
       }
 
-      // Hash + enqueue on main (Drift / prefs). Task isolate only does HTTP.
-      void report(IngestFileProgress p) => onProgress?.call(p);
-      await scanner.enqueuePending(onProgress: report);
-      final jobs = await ingest.queue.list();
-      if (jobs.isEmpty) {
+      void report(IngestFileProgress p) {
+        onProgress?.call(p);
+        unawaited(updateKeepAliveProgress(p));
+      }
+      report(
+        const IngestFileProgress(
+          title: 'Checking pending files…',
+          index: 0,
+          total: 0,
+          phase: 'preparing',
+          fraction: 0,
+        ),
+      );
+
+      // Fast Drift/prefs read only — hashing happens in the task isolate.
+      final queued = await ingest.queue.list();
+      final pending = await _pendingHashJobs();
+      if (queued.isEmpty && pending.isEmpty) {
         log.info('ingest', 'task-isolate: nothing to upload');
         if (!(_taskDone?.isCompleted ?? true)) {
           _taskDone!.complete();
         }
         return;
       }
-      _jobsById = {for (final j in jobs) j.id: j};
+
+      _jobsById = {
+        for (final j in queued) j.id: j,
+        for (final j in pending) j.id: j,
+      };
       final deviceId = await identity.ensureDeviceId();
+      final first = queued.isNotEmpty ? queued.first : pending.first;
+      report(
+        IngestFileProgress(
+          title: first.title ?? first.sourcePath ?? 'upload',
+          index: 1,
+          total: queued.length + pending.length,
+          phase: pending.isNotEmpty ? 'hashing' : 'uploading',
+          fraction: 0,
+        ),
+      );
+
+      _waitingOnTaskIsolate = true;
       FlutterForegroundTask.sendDataToTask({
         'type': 'run',
         'baseUrl': settings.baseUrl,
         'deviceId': deviceId,
-        'jobs': jobs.map((j) => j.toJson()).toList(),
+        'jobs': queued.map((j) => j.toJson()).toList(),
+        'pending': pending.map((j) => j.toJson()).toList(),
       });
-      await _taskDone!.future.timeout(
-        const Duration(hours: 6),
-        onTimeout: () {
-          log.warn('ingest', 'task-isolate batch timed out');
-        },
-      );
+      await _awaitTaskDone();
     } finally {
+      _waitingOnTaskIsolate = false;
       _onProgress = null;
       _jobsById = {};
       _commitChain = Future<void>.value();
@@ -397,6 +577,49 @@ class BackgroundIngestRunner {
       }
       _onFinished = null;
       _taskDone = null;
+    }
+  }
+
+  /// Placeholder queue rows for files that still need hashing in the task isolate.
+  Future<List<IngestQueueItem>> _pendingHashJobs() async {
+    final rows = await scanner.listPendingNotQueued();
+    if (rows.isEmpty) return const [];
+    final rules =
+        (await scanner.repository.listRules()).where((r) => r.enabled).toList();
+    final ruleNames = {for (final r in rules) r.id: r.name};
+    final now = DateTime.now().toUtc().toIso8601String();
+    return [
+      for (final row in rows)
+        IngestQueueItem(
+          id: const Uuid().v4(),
+          contentHash: '',
+          hashAlgo: ContentHash.algo,
+          sizeBytes: row.sizeBytes,
+          title: row.title,
+          sourceKind: row.sourceKind,
+          relativePath:
+              'track/${ruleNames[row.ruleId] ?? 'misc'}/${row.title ?? p.basename(row.localPath)}',
+          sourcePath: row.localPath,
+          createdAt: now,
+        ),
+    ];
+  }
+
+  /// Wait for task-isolate `done`/`error`, or unlock if the FG service dies.
+  Future<void> _awaitTaskDone() async {
+    final done = _taskDone;
+    if (done == null) return;
+    while (!done.isCompleted) {
+      await Future.any([
+        done.future,
+        Future<void>.delayed(const Duration(seconds: 3)),
+      ]);
+      if (done.isCompleted) return;
+      if (!await FlutterForegroundTask.isRunningService) {
+        log.warn('ingest', 'FG service gone during upload — ending batch');
+        done.complete();
+        return;
+      }
     }
   }
 
@@ -430,6 +653,15 @@ class BackgroundIngestRunner {
       }
     } catch (e) {
       log.warn('ingest', 'notification permission request failed: $e');
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    try {
+      if (await FlutterForegroundTask.isIgnoringBatteryOptimizations) return;
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    } catch (e) {
+      log.warn('ingest', 'battery optimization request failed: $e');
     }
   }
 }

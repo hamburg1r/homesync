@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/core/logging/app_log.dart';
 import 'package:homesync_mobile/features/catalog/data/api/homesync_api.dart';
@@ -13,6 +12,8 @@ import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_filters.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_state.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
@@ -21,95 +22,7 @@ import 'package:injectable/injectable.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path/path.dart' as p;
 
-enum CatalogViewState { loading, empty, ready, error, degraded }
-
-final class CatalogState extends Equatable {
-  const CatalogState({
-    this.viewState = CatalogViewState.loading,
-    this.files = const [],
-    this.statusMessage,
-    this.refreshing = false,
-    this.busyFileId,
-    this.browseMode = BrowseMode.allCatalog,
-    this.groupRuleId,
-    this.groupTitle,
-    this.deviceAndSyncedOnly = false,
-    this.rules = const [],
-    this.searchQuery = '',
-    this.syncEnabled = true,
-    this.ingestProgress,
-  });
-
-  final CatalogViewState viewState;
-  final List<CatalogFile> files;
-  final String? statusMessage;
-  final bool refreshing;
-  final String? busyFileId;
-  final BrowseMode browseMode;
-  final String? groupRuleId;
-  final String? groupTitle;
-  final bool deviceAndSyncedOnly;
-  final List<TrackingRule> rules;
-  final String searchQuery;
-  final bool syncEnabled;
-  final IngestFileProgress? ingestProgress;
-
-  CatalogState copyWith({
-    CatalogViewState? viewState,
-    List<CatalogFile>? files,
-    String? statusMessage,
-    bool clearStatusMessage = false,
-    bool? refreshing,
-    String? busyFileId,
-    bool clearBusyFileId = false,
-    BrowseMode? browseMode,
-    String? groupRuleId,
-    bool clearGroup = false,
-    String? groupTitle,
-    bool? deviceAndSyncedOnly,
-    List<TrackingRule>? rules,
-    String? searchQuery,
-    bool? syncEnabled,
-    IngestFileProgress? ingestProgress,
-    bool clearIngestProgress = false,
-  }) {
-    return CatalogState(
-      viewState: viewState ?? this.viewState,
-      files: files ?? this.files,
-      statusMessage:
-          clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
-      refreshing: refreshing ?? this.refreshing,
-      busyFileId: clearBusyFileId ? null : (busyFileId ?? this.busyFileId),
-      browseMode: browseMode ?? this.browseMode,
-      groupRuleId: clearGroup ? null : (groupRuleId ?? this.groupRuleId),
-      groupTitle: clearGroup ? null : (groupTitle ?? this.groupTitle),
-      deviceAndSyncedOnly: deviceAndSyncedOnly ?? this.deviceAndSyncedOnly,
-      rules: rules ?? this.rules,
-      searchQuery: searchQuery ?? this.searchQuery,
-      syncEnabled: syncEnabled ?? this.syncEnabled,
-      ingestProgress: clearIngestProgress
-          ? null
-          : (ingestProgress ?? this.ingestProgress),
-    );
-  }
-
-  @override
-  List<Object?> get props => [
-        viewState,
-        files,
-        statusMessage,
-        refreshing,
-        busyFileId,
-        browseMode,
-        groupRuleId,
-        groupTitle,
-        deviceAndSyncedOnly,
-        rules,
-        searchQuery,
-        syncEnabled,
-        ingestProgress,
-      ];
-}
+export 'package:homesync_mobile/features/catalog/presentation/catalog_state.dart';
 
 /// Catalog UI state: watches local Drift rows + drives delta refresh / pin.
 @injectable
@@ -237,7 +150,10 @@ class CatalogCubit extends Cubit<CatalogState> {
   }
 
   void _emitFilteredCatalog(List<CatalogFile> files) {
-    final filtered = _applySearch(_applyDeviceSyncedFilter(files));
+    final filtered = applyCatalogSearch(
+      applyDeviceSyncedFilter(files, enabled: state.deviceAndSyncedOnly),
+      query: state.searchQuery,
+    );
     if (state.refreshing) {
       emit(state.copyWith(files: filtered));
       return;
@@ -255,22 +171,6 @@ class CatalogCubit extends Cubit<CatalogState> {
         clearStatusMessage: true,
       ),
     );
-  }
-
-  List<CatalogFile> _applyDeviceSyncedFilter(List<CatalogFile> files) {
-    if (!state.deviceAndSyncedOnly) return files;
-    return files.where((f) => f.hasLocalBytes && !f.isDeleted).toList();
-  }
-
-  /// Local catalog search (title / notes / tags). Server ``?q=`` is for API clients.
-  List<CatalogFile> _applySearch(List<CatalogFile> files) {
-    final needle = state.searchQuery.trim().toLowerCase();
-    if (needle.isEmpty) return files;
-    return files.where((f) {
-      if (f.displayName.toLowerCase().contains(needle)) return true;
-      if ((f.notes ?? '').toLowerCase().contains(needle)) return true;
-      return f.tags.any((t) => t.toLowerCase().contains(needle));
-    }).toList();
   }
 
   Future<void> setSearchQuery(String query) async {
@@ -324,7 +224,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     List<CatalogFile> files;
     switch (state.browseMode) {
       case BrowseMode.allCatalog:
-        files = _applyDeviceSyncedFilter(_catalogFiles);
+        files = applyDeviceSyncedFilter(
+          _catalogFiles,
+          enabled: state.deviceAndSyncedOnly,
+        );
       case BrowseMode.group:
         final locals = await tracking.listLocalFiles(ruleId: state.groupRuleId);
         files = await _localsToCatalogFiles(locals);
@@ -346,7 +249,7 @@ class CatalogCubit extends Cubit<CatalogState> {
         state.browseMode == BrowseMode.removedFromPc) {
       files = files.where((f) => f.hasLocalBytes).toList();
     }
-    files = _applySearch(files);
+    files = applyCatalogSearch(files, query: state.searchQuery);
     if (isClosed) return;
     final preserve =
         state.viewState == CatalogViewState.error ||
@@ -438,7 +341,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     // scan/upload does not abort sockets.
     await backgroundIngest.ensureKeepAlive();
 
-    void onIngest(IngestFileProgress p) => _emitIngestProgress(p);
+    void onIngest(IngestFileProgress p) {
+      _emitIngestProgress(p);
+      unawaited(backgroundIngest.updateKeepAliveProgress(p));
+    }
 
     // Catalog delta only — uploads run via [backgroundIngest] so refresh
     // returns while hashing/upload continues (Android FG notification).
@@ -451,6 +357,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     try {
       await scanner.scanAndIngest(
         ingestMatches: false,
+        onProgress: onIngest,
         onIndexed: () => _emitBrowseList(),
       );
     } catch (e) {
@@ -506,6 +413,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   /// Resume durable uploads after the app returns to the foreground.
   Future<void> onAppResumed() async {
     if (!settings.syncEnabled || isClosed) return;
+    await backgroundIngest.recoverAfterResume();
     _kickBackgroundIngest();
   }
 
@@ -519,6 +427,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     try {
       await scanner.scanAndIngest(
         ingestMatches: false,
+        onProgress: (p) {
+          _emitIngestProgress(p);
+          unawaited(backgroundIngest.updateKeepAliveProgress(p));
+        },
         onIndexed: () => _emitBrowseList(),
       );
     } catch (e) {

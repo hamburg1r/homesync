@@ -36,15 +36,31 @@ class IngestFileProgress {
   /// 1-based index among the current batch.
   final int index;
   final int total;
-  /// `hashing` | `uploading` | `storing` | `finishing`
+  /// `scanning` | `preparing` | `hashing` | `uploading` | `storing` | `finishing`
   final String phase;
   /// 0.0–1.0 within [phase].
   final double fraction;
+
+  /// True when [overall] is meaningful for a determinate progress bar.
+  bool get determinate =>
+      phase != 'scanning' && phase != 'preparing' && total > 0;
+
+  /// Human-readable phase for banners / notifications.
+  String get phaseLabel => switch (phase) {
+        'scanning' => 'Scanning',
+        'preparing' => 'Preparing',
+        'hashing' => 'Hashing',
+        'uploading' => 'Uploading',
+        'storing' => 'Storing',
+        'finishing' => 'Finishing',
+        _ => phase,
+      };
 
   /// Single 0–1 value for UI (hash 0–0.4, upload 0.4–0.95, finish 0.95–1).
   double get overall {
     final f = fraction.clamp(0.0, 1.0);
     return switch (phase) {
+      'scanning' || 'preparing' => 0,
       'hashing' => f * 0.4,
       'uploading' => 0.4 + f * 0.55,
       _ => 0.95 + f * 0.05,

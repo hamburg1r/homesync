@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_view.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
-import 'package:homesync_mobile/features/catalog/presentation/catalog_page.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 
 import '../support/fixtures.dart';

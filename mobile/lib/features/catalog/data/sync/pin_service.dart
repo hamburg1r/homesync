@@ -220,8 +220,7 @@ class PinService {
     await repository.clearPinLocalPath(fileId);
     await blobs.delete(file.hashAlgo, file.contentHash);
 
-    final origin = await repository.originPathForFileId(fileId);
-    if (origin != null) {
+    for (final origin in await repository.originPathsForFileId(fileId)) {
       final originFile = File(origin);
       if (await originFile.exists()) {
         await originFile.delete();

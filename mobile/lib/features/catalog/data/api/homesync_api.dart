@@ -83,9 +83,14 @@ class HomesyncApi {
     return Uri.parse('$_baseUrl$path').replace(queryParameters: query);
   }
 
-  Future<http.Response> _send(String op, Future<http.Response> future) async {
+  Future<http.Response> _send(
+    String op,
+    Future<http.Response> future, {
+    Duration? timeoutOverride,
+  }) async {
+    final limit = timeoutOverride ?? timeout;
     try {
-      final response = await future.timeout(timeout);
+      final response = await future.timeout(limit);
       _log.fine('api', '$op → HTTP ${response.statusCode}');
       return response;
     } on TimeoutException {
@@ -347,6 +352,12 @@ class HomesyncApi {
 
   /// Resumable CAS upload: begin session → PATCH chunks → server offset ack.
   ///
+  /// Scale idle timeouts with payload size (min 2m, ~1s/MiB, cap 6h).
+  Duration _uploadIdleTimeout(int contentLength) {
+    final mb = (contentLength / (1024 * 1024)).ceil().clamp(1, 100000);
+    return Duration(seconds: (120 + mb).clamp(120, 6 * 3600));
+  }
+
   /// [readAt] returns up to [length] bytes starting at [offset]. On stall or
   /// disconnect, the client re-GETs status and continues from the acked offset.
   Future<void> putBlobResumable({
@@ -358,6 +369,8 @@ class HomesyncApi {
     int chunkSize = uploadChunkSize,
   }) async {
     refreshBaseUrlFromSettings();
+    // Begin may touch large existing blobs / slow VPN; do not use the 15s
+    // catalog timeout.
     final begin = await _send(
       'POST /v1/blob-uploads',
       _client.post(
@@ -369,6 +382,7 @@ class HomesyncApi {
           'size_bytes': contentLength,
         }),
       ),
+      timeoutOverride: _uploadIdleTimeout(contentLength),
     );
     if (begin.statusCode != 200) {
       throw HomesyncApiException(
@@ -387,6 +401,7 @@ class HomesyncApi {
     }
 
     var attempt = 0;
+    const maxAttempts = 60; // ~30m with 30s cap — covers leaving LAN and coming back
     while (offset < contentLength) {
       final length = (contentLength - offset).clamp(0, chunkSize);
       final chunk = await readAt(offset, length);
@@ -453,36 +468,39 @@ class HomesyncApi {
           return;
         }
       } on TimeoutException {
-        _log.warn('api', 'chunk timed out at $offset; polling resume');
-        offset = await _pollUploadOffset(uploadId, contentLength);
+        _log.warn('api', 'chunk timed out at $offset; will retry');
+        offset = await _pollUploadOffsetOrKeep(uploadId, contentLength, offset);
         onProgress?.call(offset, contentLength);
         attempt += 1;
+        if (attempt > maxAttempts) {
+          throw HomesyncApiException('request timed out');
+        }
         await Future<void>.delayed(_retryDelay(attempt));
       } on SocketException catch (e) {
-        _log.warn('api', 'chunk network error at $offset: $e; resume');
-        offset = await _pollUploadOffset(uploadId, contentLength);
+        _log.warn('api', 'chunk network error at $offset: $e; will retry');
+        offset = await _pollUploadOffsetOrKeep(uploadId, contentLength, offset);
         onProgress?.call(offset, contentLength);
         attempt += 1;
-        if (attempt > 12) {
+        if (attempt > maxAttempts) {
           throw HomesyncApiException('network error: ${e.message}');
         }
         await Future<void>.delayed(_retryDelay(attempt));
       } on http.ClientException catch (e) {
-        _log.warn('api', 'chunk client error at $offset: $e; resume');
-        offset = await _pollUploadOffset(uploadId, contentLength);
+        _log.warn('api', 'chunk client error at $offset: $e; will retry');
+        offset = await _pollUploadOffsetOrKeep(uploadId, contentLength, offset);
         onProgress?.call(offset, contentLength);
         attempt += 1;
-        if (attempt > 12) {
+        if (attempt > maxAttempts) {
           throw HomesyncApiException('network error: ${e.message}');
         }
         await Future<void>.delayed(_retryDelay(attempt));
       } on HttpException catch (e) {
         // e.g. "Connection closed before full header was received"
-        _log.warn('api', 'chunk HTTP error at $offset: $e; resume');
-        offset = await _pollUploadOffset(uploadId, contentLength);
+        _log.warn('api', 'chunk HTTP error at $offset: $e; will retry');
+        offset = await _pollUploadOffsetOrKeep(uploadId, contentLength, offset);
         onProgress?.call(offset, contentLength);
         attempt += 1;
-        if (attempt > 12) {
+        if (attempt > maxAttempts) {
           throw HomesyncApiException('network error: ${e.message}');
         }
         await Future<void>.delayed(_retryDelay(attempt));
@@ -492,10 +510,25 @@ class HomesyncApi {
     }
   }
 
+  /// Prefer server offset after a blip; if still offline, keep [fallback].
+  Future<int> _pollUploadOffsetOrKeep(
+    String uploadId,
+    int contentLength,
+    int fallback,
+  ) async {
+    try {
+      return await _pollUploadOffset(uploadId, contentLength);
+    } catch (e) {
+      _log.warn('api', 'upload status unreachable: $e; keeping offset $fallback');
+      return fallback;
+    }
+  }
+
   Future<int> _pollUploadOffset(String uploadId, int contentLength) async {
     final status = await _send(
       'GET /v1/blob-uploads/$uploadId',
       _client.get(_uri('/v1/blob-uploads/$uploadId')),
+      timeoutOverride: const Duration(seconds: 20),
     );
     if (status.statusCode == 404) {
       // Session wiped after finalize — treat as complete.
@@ -515,7 +548,8 @@ class HomesyncApi {
   }
 
   static Duration _retryDelay(int attempt) {
-    final seconds = (1 << attempt.clamp(0, 6)).clamp(1, 60);
+    // 1s, 2s, 4s… capped at 30s so LAN return is noticed reasonably soon.
+    final seconds = (1 << attempt.clamp(0, 5)).clamp(1, 30);
     return Duration(seconds: seconds);
   }
 
