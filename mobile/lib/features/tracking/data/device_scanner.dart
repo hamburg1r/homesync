@@ -31,8 +31,10 @@ class DeviceScanner {
   /// [onIndexed] runs after the local index is updated and before uploads,
   /// so the UI can show `pending` rows while ingest is in flight.
   /// [onProgress] receives `scanning` updates while walking storage.
+  /// [forceFullScan] ignores directory mtime cache (full re-walk).
   Future<ScanResult> scanAndIngest({
     bool ingestMatches = true,
+    bool forceFullScan = false,
     IngestProgressCallback? onProgress,
     Future<void> Function()? onIndexed,
   }) async {
@@ -67,10 +69,20 @@ class DeviceScanner {
       for (final r in fileRules) p.normalize(r.patternOrUri): r,
     };
 
+    // One-shot local index + dir mtimes (avoid per-file SELECTs).
+    final byPath = await repository.mapLocalFilesByPath();
+    final dirMtimes = forceFullScan
+        ? <String, int>{}
+        : await repository.mapScanDirMtimes();
+    if (forceFullScan) {
+      await repository.clearScanDirCache();
+    }
+
     var seen = 0;
     var tracked = 0;
     final seenPaths = <String>{};
     var lastScanReport = DateTime.fromMillisecondsSinceEpoch(0);
+    var dirsSkipped = 0;
 
     void reportScan() {
       final nowLocal = DateTime.now();
@@ -97,127 +109,208 @@ class DeviceScanner {
       required int sizeBytes,
       required int mtimeMs,
       required TrackingRuleMatch? matched,
+      LocalTrackedFile? existing,
     }) async {
       final norm = p.normalize(path);
       if (!seenPaths.add(norm)) return;
       seen += 1;
       final title = p.basename(path);
       final kind = matched?.sourceKindOverride ?? sourceKindFromPath(path);
+      final prior = existing ?? byPath[norm];
 
       if (matched != null) {
         tracked += 1;
-        final existing = await repository.getLocalFile(path);
         final sizeUnchanged =
-            existing != null && existing.sizeBytes == sizeBytes;
+            prior != null && prior.sizeBytes == sizeBytes;
         final mtimeUnchanged =
-            existing?.mtimeMs != null && existing!.mtimeMs == mtimeMs;
-        // Synced rows with a known digest but null mtime (older builds) only
-        // need a backfill — size match is enough to skip rehash.
+            prior?.mtimeMs != null && prior!.mtimeMs == mtimeMs;
         final mtimeOkForSkip = mtimeUnchanged ||
-            (existing != null &&
-                existing.isSynced &&
-                existing.mtimeMs == null &&
+            (prior != null &&
+                prior.isSynced &&
+                prior.mtimeMs == null &&
                 sizeUnchanged);
         final metadataUnchanged = sizeUnchanged && mtimeOkForSkip;
         final hasDigest =
-            existing?.contentHash != null && existing!.contentHash!.isNotEmpty;
+            prior?.contentHash != null && prior!.contentHash!.isNotEmpty;
 
-        if (existing != null &&
-            existing.isSynced &&
+        late final LocalTrackedFile next;
+        if (prior != null &&
+            prior.isSynced &&
             metadataUnchanged &&
             hasDigest) {
-          await repository.upsertLocalFile(
-            LocalTrackedFile(
-              localPath: path,
-              ruleId: matched.rule.id,
-              fileId: existing.fileId,
-              contentHash: existing.contentHash,
-              title: title,
-              sizeBytes: sizeBytes,
-              mtimeMs: mtimeMs,
-              mimeType: existing.mimeType,
-              sourceKind: kind,
-              seenAt: now,
-              ingestStatus: IngestStatus.synced,
-            ),
-          );
-        } else if (existing != null && metadataUnchanged && hasDigest) {
-          // Already hashed this on-disk revision — keep digest for upload
-          // retry without blake3 (pending/failed after a large-file abort).
-          final status = existing.ingestStatus == IngestStatus.failed
-              ? IngestStatus.failed
-              : IngestStatus.pending;
-          await repository.upsertLocalFile(
-            LocalTrackedFile(
-              localPath: path,
-              ruleId: matched.rule.id,
-              fileId: existing.fileId,
-              contentHash: existing.contentHash,
-              title: title,
-              sizeBytes: sizeBytes,
-              mtimeMs: mtimeMs,
-              mimeType: existing.mimeType,
-              sourceKind: kind,
-              seenAt: now,
-              ingestStatus: status,
-            ),
-          );
-        } else {
-          // New file or size/mtime changed — (re)hash on ingest; keep binding.
-          // Clear digest when metadata changed so we do not treat the old hash
-          // as valid for the new size/mtime (would skip content replace).
-          await repository.upsertLocalFile(
-            LocalTrackedFile(
-              localPath: path,
-              ruleId: matched.rule.id,
-              fileId: existing?.fileId,
-              contentHash: metadataUnchanged ? existing.contentHash : null,
-              title: title,
-              sizeBytes: sizeBytes,
-              mtimeMs: mtimeMs,
-              mimeType: existing?.mimeType,
-              sourceKind: kind,
-              seenAt: now,
-              ingestStatus: IngestStatus.pending,
-            ),
-          );
-        }
-      } else {
-        await repository.upsertLocalFile(
-          LocalTrackedFile(
+          next = LocalTrackedFile(
             localPath: path,
-            ruleId: null,
+            ruleId: matched.rule.id,
+            fileId: prior.fileId,
+            contentHash: prior.contentHash,
             title: title,
             sizeBytes: sizeBytes,
             mtimeMs: mtimeMs,
+            mimeType: prior.mimeType,
             sourceKind: kind,
             seenAt: now,
-            ingestStatus: IngestStatus.untracked,
-          ),
+            ingestStatus: IngestStatus.synced,
+          );
+        } else if (prior != null && metadataUnchanged && hasDigest) {
+          final status = prior.ingestStatus == IngestStatus.failed
+              ? IngestStatus.failed
+              : IngestStatus.pending;
+          next = LocalTrackedFile(
+            localPath: path,
+            ruleId: matched.rule.id,
+            fileId: prior.fileId,
+            contentHash: prior.contentHash,
+            title: title,
+            sizeBytes: sizeBytes,
+            mtimeMs: mtimeMs,
+            mimeType: prior.mimeType,
+            sourceKind: kind,
+            seenAt: now,
+            ingestStatus: status,
+          );
+        } else {
+          next = LocalTrackedFile(
+            localPath: path,
+            ruleId: matched.rule.id,
+            fileId: prior?.fileId,
+            contentHash: metadataUnchanged ? prior.contentHash : null,
+            title: title,
+            sizeBytes: sizeBytes,
+            mtimeMs: mtimeMs,
+            mimeType: prior?.mimeType,
+            sourceKind: kind,
+            seenAt: now,
+            ingestStatus: IngestStatus.pending,
+          );
+        }
+        await repository.upsertLocalFile(next);
+        byPath[norm] = next;
+      } else {
+        final next = LocalTrackedFile(
+          localPath: path,
+          ruleId: null,
+          title: title,
+          sizeBytes: sizeBytes,
+          mtimeMs: mtimeMs,
+          sourceKind: kind,
+          seenAt: now,
+          ingestStatus: IngestStatus.untracked,
         );
+        await repository.upsertLocalFile(next);
+        byPath[norm] = next;
       }
       reportScan();
     }
 
-    for (final root in roots) {
-      if (!await root.exists()) continue;
-      await for (final entity in _listFilesSafe(root)) {
-        final path = entity.path;
-        if (path.contains('/.')) continue;
+    Future<void> adoptCachedSubtree(String dirNorm) async {
+      final prefixSep = '$dirNorm${Platform.pathSeparator}';
+      final prefixSlash = '$dirNorm/';
+      final keys = byPath.keys.toList(growable: false);
+      for (final path in keys) {
+        if (path != dirNorm &&
+            !path.startsWith(prefixSep) &&
+            !path.startsWith(prefixSlash)) {
+          continue;
+        }
+        // Only adopt file rows (index never stores directories).
+        final prior = byPath[path];
+        if (prior == null) continue;
         final matched = _matchRule(
           path: path,
           topLevelRegex: topLevelRegex,
           folderRules: folderRules,
           fileRulePaths: fileRulePaths,
         );
-        final stat = await entity.stat();
         await consider(
           path: path,
-          sizeBytes: stat.size,
-          mtimeMs: stat.modified.millisecondsSinceEpoch,
+          sizeBytes: prior.sizeBytes,
+          mtimeMs: prior.mtimeMs ?? 0,
           matched: matched,
+          existing: prior,
         );
       }
+    }
+
+    Future<void> walkDir(Directory dir) async {
+      final dirNorm = p.normalize(dir.path);
+      if (_shouldSkipDir(dirNorm)) return;
+
+      int? mtimeMs;
+      try {
+        mtimeMs = (await dir.stat()).modified.millisecondsSinceEpoch;
+      } on FileSystemException catch (e) {
+        log.warn('tracking', 'skip inaccessible $dirNorm: $e');
+        return;
+      }
+
+      final cached = dirMtimes[dirNorm];
+      final hasIndexedChildren = byPath.keys.any((path) {
+        if (path == dirNorm) return false;
+        return path.startsWith('$dirNorm${Platform.pathSeparator}') ||
+            path.startsWith('$dirNorm/');
+      });
+      if (!forceFullScan &&
+          cached != null &&
+          mtimeMs == cached &&
+          hasIndexedChildren) {
+        dirsSkipped += 1;
+        await adoptCachedSubtree(dirNorm);
+        return;
+      }
+
+      final Stream<FileSystemEntity> listing;
+      try {
+        listing = dir.list(followLinks: false);
+      } on FileSystemException catch (e) {
+        log.warn('tracking', 'skip inaccessible $dirNorm: $e');
+        return;
+      }
+
+      final subdirs = <Directory>[];
+      await for (final entity in listing.handleError(
+        (Object e, StackTrace _) {
+          log.warn('tracking', 'skip inaccessible under $dirNorm: $e');
+        },
+        test: (e) => e is FileSystemException,
+      )) {
+        if (entity is File) {
+          final path = entity.path;
+          if (path.contains('/.')) continue;
+          final matched = _matchRule(
+            path: path,
+            topLevelRegex: topLevelRegex,
+            folderRules: folderRules,
+            fileRulePaths: fileRulePaths,
+          );
+          try {
+            final stat = await entity.stat();
+            await consider(
+              path: path,
+              sizeBytes: stat.size,
+              mtimeMs: stat.modified.millisecondsSinceEpoch,
+              matched: matched,
+              existing: byPath[p.normalize(path)],
+            );
+          } on FileSystemException catch (e) {
+            log.warn('tracking', 'skip file $path: $e');
+          }
+        } else if (entity is Directory) {
+          if (_shouldSkipDir(entity.path)) continue;
+          subdirs.add(entity);
+        }
+      }
+
+      for (final sub in subdirs) {
+        await walkDir(sub);
+      }
+
+      await repository.upsertScanDirMtime(dirNorm, mtimeMs);
+      dirMtimes[dirNorm] = mtimeMs;
+    }
+
+    for (final root in roots) {
+      if (!await root.exists()) continue;
+      await walkDir(root);
     }
 
     // File rules: ensure exact paths are considered even if not under a walk root.
@@ -226,14 +319,18 @@ class DeviceScanner {
       if (!await file.exists()) continue;
       final path = file.path;
       if (path.contains('/.')) continue;
-      final size = (await file.stat()).size;
-      final mtimeMs = (await file.stat()).modified.millisecondsSinceEpoch;
-      await consider(
-        path: path,
-        sizeBytes: size,
-        mtimeMs: mtimeMs,
-        matched: TrackingRuleMatch(rule: rule, contributing: [rule]),
-      );
+      try {
+        final stat = await file.stat();
+        await consider(
+          path: path,
+          sizeBytes: stat.size,
+          mtimeMs: stat.modified.millisecondsSinceEpoch,
+          matched: TrackingRuleMatch(rule: rule, contributing: [rule]),
+          existing: byPath[p.normalize(path)],
+        );
+      } on FileSystemException catch (e) {
+        log.warn('tracking', 'skip file rule $path: $e');
+      }
     }
 
     onProgress?.call(
@@ -258,7 +355,8 @@ class DeviceScanner {
 
     log.info(
       'tracking',
-      'scan seen=$seen tracked=$tracked ingested=$ingested',
+      'scan seen=$seen tracked=$tracked ingested=$ingested '
+      'dirsSkipped=$dirsSkipped forceFull=$forceFullScan',
     );
     return ScanResult(seen: seen, tracked: tracked, ingested: ingested);
   }
@@ -574,34 +672,6 @@ class DeviceScanner {
     return dirs;
   }
 
-  /// Breadth-first walk that skips inaccessible / privacy-sandbox dirs.
-  Stream<File> _listFilesSafe(Directory root) async* {
-    final queue = <Directory>[root];
-    while (queue.isNotEmpty) {
-      final dir = queue.removeLast();
-      final Stream<FileSystemEntity> listing;
-      try {
-        listing = dir.list(followLinks: false);
-      } on FileSystemException catch (e) {
-        log.warn('tracking', 'skip inaccessible ${dir.path}: $e');
-        continue;
-      }
-      await for (final entity in listing.handleError(
-        (Object e, StackTrace _) {
-          log.warn('tracking', 'skip inaccessible under ${dir.path}: $e');
-        },
-        test: (e) => e is FileSystemException,
-      )) {
-        if (entity is File) {
-          yield entity;
-        } else if (entity is Directory) {
-          if (_shouldSkipDir(entity.path)) continue;
-          queue.add(entity);
-        }
-      }
-    }
-  }
-
   bool _shouldSkipDir(String path) {
     final norm = p.normalize(path);
     // App-private sandboxes are unreadable without special access and abort
@@ -729,6 +799,7 @@ class DeviceScanner {
   /// in flight may still finish; queued and not-yet-started work is dropped.
   Future<int> setRuleEnabled(TrackingRule rule, bool enabled) async {
     await repository.setRuleEnabled(rule.id, enabled);
+    await repository.clearScanDirCache();
     if (enabled) return 0;
     final ids = await repository.ruleIdsAffectedBy(rule);
     final paths = await repository.cancelPendingForRuleIds(ids);
@@ -741,6 +812,9 @@ class DeviceScanner {
     );
     return paths.length;
   }
+
+  /// Drop directory mtime cache so the next scan re-walks every folder.
+  Future<void> invalidateDirCache() => repository.clearScanDirCache();
 }
 
 class _MatchContext {

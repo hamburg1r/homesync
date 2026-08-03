@@ -737,7 +737,7 @@ class HomesyncApi {
     }
   }
 
-  Future<List<KdbxConflict>> listConflicts({String? state = 'open'}) async {
+  Future<List<KdbxConflict>> listConflicts({String? state = 'active'}) async {
     refreshBaseUrlFromSettings();
     final query = <String, String>{};
     if (state != null) query['state'] = state;
@@ -779,7 +779,7 @@ class HomesyncApi {
 
   Future<CatalogFile> resolveConflict(
     String conflictId,
-    FileContentRequest request,
+    KdbxResolveRequest request,
   ) async {
     refreshBaseUrlFromSettings();
     final response = await _send(
@@ -793,15 +793,46 @@ class HomesyncApi {
     if (response.statusCode == 404) {
       throw HomesyncApiException('conflict not found', statusCode: 404);
     }
+    if (response.statusCode == 409) {
+      throw HomesyncApiException(
+        _httpDetail(response.body) ?? 'conflict resolve stale',
+        statusCode: 409,
+      );
+    }
     if (response.statusCode != 200) {
       throw HomesyncApiException(
-        'conflict resolve failed',
+        _httpDetail(response.body) ?? 'conflict resolve failed',
         statusCode: response.statusCode,
       );
     }
     return CatalogFile.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
     );
+  }
+
+  /// Re-classify stored candidates after the vault secret is set.
+  ///
+  /// Returns a [CatalogFile] if auto-resolved, otherwise the refreshed conflict.
+  Future<Object> recheckConflict(String conflictId) async {
+    refreshBaseUrlFromSettings();
+    final response = await _send(
+      'POST /v1/conflicts/$conflictId/recheck',
+      _client.post(_uri('/v1/conflicts/$conflictId/recheck')),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('conflict not found', statusCode: 404);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        _httpDetail(response.body) ?? 'conflict recheck failed',
+        statusCode: response.statusCode,
+      );
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (body['status'] == 'conflict' && body['conflict'] is Map) {
+      return KdbxConflict.fromJson(body['conflict'] as Map<String, dynamic>);
+    }
+    return CatalogFile.fromJson(body);
   }
 
   /// Soft-delete on the PC catalog (sets `deleted_at`; hard-purge via GC).

@@ -454,3 +454,276 @@ def test_kdbx_needs_secret_without_password(
     )
     assert resp.status_code == 202, resp.text
     assert resp.json()["conflict"]["state"] == "needs_secret"
+    active = client.get("/v1/conflicts")  # default state=active
+    assert active.status_code == 200
+    assert any(c["conflict_id"] == resp.json()["conflict"]["conflict_id"] for c in active.json())
+    open_only = client.get("/v1/conflicts", params={"state": "open"})
+    assert open_only.status_code == 200
+    assert open_only.json() == []
+    needs = client.get("/v1/conflicts", params={"state": "needs_secret"})
+    assert len(needs.json()) == 1
+
+
+def test_diff_summary_includes_entry_uuids(tmp_path: Path) -> None:
+    a = tmp_path / "a.kdbx"
+    b = tmp_path / "b.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+    kp = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp.find_entries(title="Bank", first=True)
+    assert entry is not None
+    uuid = str(entry.uuid).lower()
+    kp.delete_entry(entry)
+    kp.add_entry(kp.root_group, "PhoneOnly", "u", "p")
+    kp.save()
+
+    diff = classify_kdbx_paths(a, b, password=VAULT_PW)
+    summary = diff.redacted_summary()
+    assert uuid in {u.lower() for u in summary["removed_entry_uuids"]}
+    assert summary["added_entry_uuids"]
+    assert "auto_mergeable" in summary
+    assert summary["auto_mergeable"] is False
+
+
+def test_kdbx_resolve_entries_keep_base_retains_deleted(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets_entries.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp_b.find_entries(title="Bank", first=True)
+    assert entry is not None
+    removed_uuid = str(entry.uuid).lower()
+    kp_b.delete_entry(entry)
+    kp_b.save()
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    _set_secret(client, file_id)
+
+    payload_b = b.read_bytes()
+    hb = _put_bytes(client, data_root, payload_b)
+    conflict_resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+        },
+    )
+    assert conflict_resp.status_code == 202, conflict_resp.text
+    conflict = conflict_resp.json()["conflict"]
+    conflict_id = conflict["conflict_id"]
+    summary = conflict["diff_summary"]
+    assert removed_uuid in {
+        u.lower() for u in summary["removed_entry_uuids"]
+    }
+    base_h = next(c["content_hash"] for c in conflict["candidates"] if c["role"] == "base")
+    inc_h = next(
+        c["content_hash"] for c in conflict["candidates"] if c["role"] == "incoming"
+    )
+
+    resolved = client.post(
+        f"/v1/conflicts/{conflict_id}/resolve",
+        json={
+            "mode": "entries",
+            "base_hash": base_h,
+            "incoming_hash": inc_h,
+            "choices": [{"entry_uuid": removed_uuid, "keep": "base"}],
+            "note": "keep deleted on PC",
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    head = resolved.json()["content_hash"]
+    merged_path = blob_path(data_root, DEFAULT_HASH_ALGO, head)
+    merged = PyKeePass(str(merged_path), password=VAULT_PW)
+    assert merged.find_entries(title="Bank", first=True) is not None
+    assert client.get(f"/v1/conflicts/{conflict_id}").json()["state"] == "resolved"
+
+
+def test_kdbx_resolve_entries_accept_deletion(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets_del.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp_b.find_entries(title="Bank", first=True)
+    assert entry is not None
+    removed_uuid = str(entry.uuid).lower()
+    kp_b.delete_entry(entry)
+    kp_b.save()
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    _set_secret(client, file_id)
+
+    payload_b = b.read_bytes()
+    hb = _put_bytes(client, data_root, payload_b)
+    conflict_resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+        },
+    )
+    assert conflict_resp.status_code == 202, conflict_resp.text
+    conflict = conflict_resp.json()["conflict"]
+    conflict_id = conflict["conflict_id"]
+    base_h = next(c["content_hash"] for c in conflict["candidates"] if c["role"] == "base")
+    inc_h = next(
+        c["content_hash"] for c in conflict["candidates"] if c["role"] == "incoming"
+    )
+
+    resolved = client.post(
+        f"/v1/conflicts/{conflict_id}/resolve",
+        json={
+            "mode": "entries",
+            "base_hash": base_h,
+            "incoming_hash": inc_h,
+            "choices": [{"entry_uuid": removed_uuid, "keep": "incoming"}],
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    head = resolved.json()["content_hash"]
+    merged = PyKeePass(
+        str(blob_path(data_root, DEFAULT_HASH_ALGO, head)),
+        password=VAULT_PW,
+    )
+    assert merged.find_entries(title="Bank", first=True) is None
+
+
+def test_kdbx_resolve_candidate_promotes_incoming(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets_cand.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp_b.find_entries(title="Bank", first=True)
+    assert entry is not None
+    kp_b.delete_entry(entry)
+    kp_b.save()
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    _set_secret(client, file_id)
+
+    payload_b = b.read_bytes()
+    hb = _put_bytes(client, data_root, payload_b)
+    conflict_resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+        },
+    )
+    assert conflict_resp.status_code == 202, conflict_resp.text
+    conflict_id = conflict_resp.json()["conflict"]["conflict_id"]
+
+    resolved = client.post(
+        f"/v1/conflicts/{conflict_id}/resolve",
+        json={
+            "mode": "candidate",
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+            "note": "keep phone",
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["content_hash"] == hb
+    assert client.get(f"/v1/conflicts/{conflict_id}").json()["state"] == "resolved"
+
+
+def test_kdbx_entries_reject_when_extras(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets_extra.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    c = tmp_path / "extra.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp_b.find_entries(title="Bank", first=True)
+    assert entry is not None
+    kp_b.delete_entry(entry)
+    kp_b.save()
+    _make_kdbx(c, title="Other", password="z")
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    _set_secret(client, file_id)
+
+    hb = _put_bytes(client, data_root, b.read_bytes())
+    conflict_resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(b.read_bytes()),
+        },
+    )
+    assert conflict_resp.status_code == 202
+    conflict_id = conflict_resp.json()["conflict"]["conflict_id"]
+    payload_c = c.read_bytes()
+    hc = _put_bytes(client, data_root, payload_c)
+    extra = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hc,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_c),
+        },
+    )
+    assert extra.status_code == 202
+
+    conflict = client.get(f"/v1/conflicts/{conflict_id}").json()
+    base_h = next(x["content_hash"] for x in conflict["candidates"] if x["role"] == "base")
+    inc_h = next(
+        x["content_hash"] for x in conflict["candidates"] if x["role"] == "incoming"
+    )
+    bad = client.post(
+        f"/v1/conflicts/{conflict_id}/resolve",
+        json={
+            "mode": "entries",
+            "base_hash": base_h,
+            "incoming_hash": inc_h,
+            "choices": [],
+        },
+    )
+    assert bad.status_code == 409, bad.text

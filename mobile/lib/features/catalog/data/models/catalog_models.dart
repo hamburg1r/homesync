@@ -71,6 +71,8 @@ abstract class CatalogFile with _$CatalogFile {
     /// Tracked phone file waiting for / failed phone→PC ingest.
     @JsonKey(includeFromJson: false, includeToJson: false)
     LocalUploadState? localUpload,
+    /// Absolute device path or catalog relative path for folder browse.
+    @JsonKey(includeFromJson: false, includeToJson: false) String? browsePath,
   }) = _CatalogFile;
 
   factory CatalogFile.fromJson(Map<String, dynamic> json) =>

@@ -467,7 +467,7 @@ class BackgroundIngestRunner {
         log.warn(
           'ingest',
           'KeePass conflict ${map['conflict_id']} for job ${map['id']} '
-          '(${map['state']}) — open Conflicts in the drawer',
+          '(${map['state']}) — open KeePass conflicts (drawer or ⋮ menu)',
         );
       case 'item_err':
         log.warn(

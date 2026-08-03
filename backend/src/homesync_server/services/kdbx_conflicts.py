@@ -18,7 +18,7 @@ from homesync_server.kdbx.diff import (
     classify_kdbx_paths,
     is_kdbx_file,
 )
-from homesync_server.kdbx.merge import merge_kdbx_paths
+from homesync_server.kdbx.merge import merge_kdbx_paths, merge_kdbx_with_choices
 from homesync_server.models import File, FilePath, FileVersion, KdbxConflict, KdbxConflictCandidate
 from homesync_server.schemas.catalog import (
     FileOut,
@@ -28,7 +28,7 @@ from homesync_server.schemas.catalog import (
 )
 from homesync_server.services import blobs as blob_svc
 from homesync_server.services import catalog as catalog_svc
-from homesync_server.storage import hash_bytes
+from homesync_server.storage import blob_path, hash_bytes
 from homesync_server.util import new_uuid, next_updated_at, utc_now_iso
 
 
@@ -38,6 +38,10 @@ class ConflictNotFoundError(Exception):
 
 class ConflictValidationError(Exception):
     pass
+
+
+class ConflictStaleError(Exception):
+    """Choices or candidate no longer match the conflict (HTTP 409)."""
 
 
 @dataclass(frozen=True)
@@ -103,16 +107,26 @@ def get_conflict(session: Session, conflict_id: str) -> KdbxConflict:
 def list_conflicts(
     session: Session,
     *,
-    state: str | None = "open",
+    state: str | None = "active",
     limit: int = 100,
 ) -> list[KdbxConflict]:
+    """List conflicts.
+
+    ``state=active`` (default) = unresolved outbox rows
+    (``open`` | ``needs_secret`` | ``diff_failed``).
+    Pass an exact state string for a single status, or ``None`` for all rows.
+    """
     stmt = (
         select(KdbxConflict)
         .options(selectinload(KdbxConflict.candidates))
         .order_by(KdbxConflict.updated_at.desc())
         .limit(limit)
     )
-    if state:
+    if state == "active":
+        stmt = stmt.where(
+            KdbxConflict.state.in_(("open", "needs_secret", "diff_failed"))
+        )
+    elif state:
         stmt = stmt.where(KdbxConflict.state == state)
     return list(session.scalars(stmt).all())
 
@@ -720,16 +734,78 @@ def resolve_conflict(
     data_root: Path,
     conflict_id: str,
     *,
+    mode: str = "upload",
+    content_hash: str | None = None,
+    hash_algo: str = "blake3",
+    size_bytes: int | None = None,
+    note: str | None = None,
+    base_hash: str | None = None,
+    incoming_hash: str | None = None,
+    choices: list[dict[str, str]] | None = None,
+) -> File:
+    """Close outbox by promoting a blob (upload / candidate) or choice-merge."""
+    conflict = get_conflict(session, conflict_id)
+    if conflict.state == "resolved":
+        raise ConflictValidationError("conflict already resolved")
+
+    mode_norm = mode.strip().lower()
+    if mode_norm == "entries":
+        return _resolve_by_entries(
+            session,
+            data_root,
+            conflict,
+            base_hash=base_hash,
+            incoming_hash=incoming_hash,
+            choices=choices or [],
+            note=note,
+        )
+    if mode_norm == "candidate":
+        if not content_hash or size_bytes is None:
+            raise ConflictValidationError(
+                "candidate resolve requires content_hash and size_bytes"
+            )
+        cand_hashes = {c.content_hash for c in conflict.candidates}
+        digest = content_hash.strip().lower()
+        if digest not in cand_hashes:
+            raise ConflictStaleError(
+                "content_hash is not a candidate of this conflict"
+            )
+        return _resolve_promote_blob(
+            session,
+            data_root,
+            conflict,
+            content_hash=digest,
+            hash_algo=hash_algo,
+            size_bytes=size_bytes,
+            note=note,
+        )
+    # upload (legacy)
+    if not content_hash or size_bytes is None:
+        raise ConflictValidationError(
+            "upload resolve requires content_hash and size_bytes"
+        )
+    return _resolve_promote_blob(
+        session,
+        data_root,
+        conflict,
+        content_hash=content_hash.strip().lower(),
+        hash_algo=hash_algo,
+        size_bytes=size_bytes,
+        note=note,
+    )
+
+
+def _resolve_promote_blob(
+    session: Session,
+    data_root: Path,
+    conflict: KdbxConflict,
+    *,
     content_hash: str,
     hash_algo: str,
     size_bytes: int,
     note: str | None = None,
 ) -> File:
     """Upload-already-done: set AB as head, archive other candidates, close outbox."""
-    conflict = get_conflict(session, conflict_id)
-    if conflict.state == "resolved":
-        raise ConflictValidationError("conflict already resolved")
-
     algo = hash_algo.strip().lower()
     digest = content_hash.strip().lower()
     file_row = catalog_svc.get_file(session, conflict.file_id)
@@ -773,9 +849,7 @@ def resolve_conflict(
         )
         seen_hashes.add(cand.content_hash)
 
-    # Promote AB — bypass kdbx outbox by calling update_file_content when head differs.
     if digest != previous_head:
-        # Temporarily not another file's head.
         other = session.scalars(
             select(File).where(
                 File.content_hash == digest,
@@ -789,9 +863,6 @@ def resolve_conflict(
             else:
                 raise catalog_svc.CatalogConflictError(other)
 
-        # Direct head update (versions for old head already added above if needed).
-        # update_file_content also archives current head — skip double archive:
-        # we already archived; set head manually.
         file_row.content_hash = digest
         file_row.size_bytes = size_bytes
         file_row.updated_at = next_updated_at(file_row.updated_at)
@@ -814,9 +885,234 @@ def resolve_conflict(
     return catalog_svc.get_file(session, file_row.file_id)
 
 
+def _resolve_by_entries(
+    session: Session,
+    data_root: Path,
+    conflict: KdbxConflict,
+    *,
+    base_hash: str | None,
+    incoming_hash: str | None,
+    choices: list[dict[str, str]],
+    note: str | None,
+) -> File:
+    file_row = catalog_svc.get_file(session, conflict.file_id)
+    algo = file_row.hash_algo.strip().lower()
+    password = kdbx_secrets.get_password(conflict.file_id)
+    if not password:
+        raise ConflictValidationError(
+            "vault secret not set; PUT /v1/files/{id}/kdbx-secret first"
+        )
+
+    by_role = {c.role: c for c in conflict.candidates}
+    extras = [c for c in conflict.candidates if c.role == "extra"]
+    if extras:
+        raise ConflictStaleError(
+            "conflict has extra candidates; use mode=candidate "
+            "(Keep PC / Keep phone) first"
+        )
+    base_cand = by_role.get("base")
+    inc_cand = by_role.get("incoming")
+    if base_cand is None or inc_cand is None:
+        raise ConflictValidationError(
+            "entries resolve requires base and incoming candidates"
+        )
+
+    base = (base_hash or base_cand.content_hash).strip().lower()
+    incoming = (incoming_hash or inc_cand.content_hash).strip().lower()
+    if base != base_cand.content_hash or incoming != inc_cand.content_hash:
+        raise ConflictStaleError(
+            "base_hash/incoming_hash do not match conflict candidates"
+        )
+
+    _ensure_blob(data_root, algo, base, base_cand.size_bytes)
+    _ensure_blob(data_root, algo, incoming, inc_cand.size_bytes)
+
+    diff = _run_diff(data_root, algo, base, incoming, password)
+    if diff.classification in (
+        DiffClassification.unlock_failed,
+        DiffClassification.parse_failed,
+    ):
+        raise ConflictValidationError(diff.error or "kdbx diff failed")
+
+    contested = set(diff.removed_entry_uuids) | set(diff.added_entry_uuids)
+    for detail in diff.modified_entry_details:
+        u = detail.get("uuid")
+        if isinstance(u, str) and u:
+            contested.add(u.strip().lower())
+    contested = {u.strip().lower() for u in contested if u}
+
+    choice_map: dict[str, str] = {}
+    for raw in choices:
+        uuid = str(raw.get("entry_uuid", "")).strip().lower()
+        keep = str(raw.get("keep", "")).strip().lower()
+        if not uuid or keep not in ("base", "incoming", "discard"):
+            raise ConflictValidationError(
+                "each choice needs entry_uuid and keep=base|incoming|discard"
+            )
+        choice_map[uuid] = keep
+
+    # Plan: 409 if submitted UUID set no longer matches contested UUIDs.
+    if contested and set(choice_map) - contested:
+        raise ConflictStaleError(
+            "choices include entry_uuid(s) not in current base/incoming diff"
+        )
+    if contested and contested - set(choice_map):
+        # Allow omitting choices (defaults apply), but reject if client claimed
+        # a full set that is missing contested UUIDs when they sent any.
+        # Soft: only reject unknown UUIDs above; omissions use defaults.
+        pass
+
+    path_a = blob_path(data_root, algo, base)
+    path_b = blob_path(data_root, algo, incoming)
+    with tempfile.TemporaryDirectory(prefix="homesync-kdbx-choice-") as tmp:
+        dest = Path(tmp) / "merged.kdbx"
+        merge_kdbx_with_choices(
+            path_a,
+            path_b,
+            password=password,
+            dest=dest,
+            choices=choice_map,
+        )
+        body = dest.read_bytes()
+    digest = hash_bytes(body, algo=algo)
+    blob_svc.put_blob_bytes(data_root, algo, digest, body)
+    merged_size = len(body)
+
+    updated = _promote_merged_head(
+        session,
+        data_root,
+        file_row,
+        algo=algo,
+        merged_hash=digest,
+        merged_size=merged_size,
+        archive=[
+            (incoming, inc_cand.size_bytes, note or "kdbx choice merge incoming"),
+        ],
+        note=note or "kdbx choice merge",
+    )
+    conflict.state = "resolved"
+    conflict.resolved_content_hash = digest
+    conflict.updated_at = next_updated_at(conflict.updated_at)
+    conflict.diff_summary_json = json.dumps(
+        {
+            "classification": "real",
+            "resolved_by": "entries",
+            "resolved_content_hash": digest,
+            "choices": choice_map,
+        }
+    )
+    session.flush()
+    return updated
+
+
+def recheck_conflict(
+    session: Session,
+    data_root: Path,
+    conflict_id: str,
+) -> ContentOutcome:
+    """Re-run classify/auto-merge on stored base+incoming after secret is set."""
+    conflict = get_conflict(session, conflict_id)
+    if conflict.state == "resolved":
+        raise ConflictValidationError("conflict already resolved")
+
+    file_row = catalog_svc.get_file(session, conflict.file_id)
+    algo = file_row.hash_algo.strip().lower()
+    password = kdbx_secrets.get_password(conflict.file_id)
+    if not password:
+        raise ConflictValidationError(
+            "vault secret not set; PUT /v1/files/{id}/kdbx-secret first"
+        )
+
+    by_role = {c.role: c for c in conflict.candidates}
+    base_cand = by_role.get("base")
+    # Prefer newest incoming-like candidate: incoming then latest extra.
+    inc_cand = by_role.get("incoming")
+    extras = sorted(
+        [c for c in conflict.candidates if c.role == "extra"],
+        key=lambda c: c.created_at,
+    )
+    if extras:
+        inc_cand = extras[-1]
+    if base_cand is None or inc_cand is None:
+        raise ConflictValidationError("conflict missing base/incoming candidates")
+
+    _ensure_blob(data_root, algo, base_cand.content_hash, base_cand.size_bytes)
+    _ensure_blob(data_root, algo, inc_cand.content_hash, inc_cand.size_bytes)
+
+    diff = _run_diff(
+        data_root,
+        algo,
+        base_cand.content_hash,
+        inc_cand.content_hash,
+        password,
+    )
+    if diff.classification == DiffClassification.unlock_failed:
+        conflict.state = "needs_secret"
+        conflict.diff_summary_json = json.dumps(
+            {"classification": "needs_secret", "error": diff.error}
+        )
+        conflict.updated_at = next_updated_at(conflict.updated_at)
+        session.flush()
+        return ContentOutcome(
+            kind="conflict", conflict=get_conflict(session, conflict.conflict_id)
+        )
+
+    if diff.is_trivial:
+        updated = _resolve_promote_blob(
+            session,
+            data_root,
+            conflict,
+            content_hash=inc_cand.content_hash,
+            hash_algo=algo,
+            size_bytes=inc_cand.size_bytes,
+            note="trivial kdbx recheck",
+        )
+        return ContentOutcome(kind="file", file=updated)
+
+    if diff.is_auto_mergeable:
+        try:
+            return _auto_merge_and_promote(
+                session,
+                data_root,
+                file_row,
+                algo=algo,
+                head_hash=base_cand.content_hash,
+                incoming_hash=inc_cand.content_hash,
+                incoming_size=inc_cand.size_bytes,
+                password=password,
+                note="kdbx recheck auto-merge",
+                conflict=conflict,
+            )
+        except Exception as exc:  # noqa: BLE001
+            conflict.state = "diff_failed"
+            conflict.diff_summary_json = json.dumps(
+                {
+                    "classification": "diff_failed",
+                    "error": f"recheck auto-merge failed: {exc}",
+                    **{
+                        k: v
+                        for k, v in diff.redacted_summary().items()
+                        if k not in ("classification", "error")
+                    },
+                }
+            )
+            conflict.updated_at = next_updated_at(conflict.updated_at)
+            session.flush()
+            return ContentOutcome(
+                kind="conflict", conflict=get_conflict(session, conflict.conflict_id)
+            )
+
+    conflict.state = "open"
+    conflict.diff_summary_json = json.dumps(diff.redacted_summary())
+    conflict.updated_at = next_updated_at(conflict.updated_at)
+    session.flush()
+    return ContentOutcome(
+        kind="conflict", conflict=get_conflict(session, conflict.conflict_id)
+    )
+
+
 def set_file_kdbx_secret(file_id: str, password: str) -> None:
     kdbx_secrets.set_password(file_id, password)
-
 
 def content_result_to_schema(outcome: ContentOutcome) -> KdbxContentResult | FileOut:
     if outcome.kind == "file" and outcome.file is not None:

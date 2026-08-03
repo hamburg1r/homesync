@@ -27,6 +27,94 @@ class KdbxConflictCandidate {
   }
 }
 
+/// Per-entry keep decision for ``mode=entries`` resolve.
+class KdbxEntryChoice {
+  const KdbxEntryChoice({required this.entryUuid, required this.keep});
+
+  final String entryUuid;
+
+  /// ``base`` | ``incoming`` | ``discard``
+  final String keep;
+
+  Map<String, dynamic> toJson() => {
+        'entry_uuid': entryUuid,
+        'keep': keep,
+      };
+}
+
+/// Body for ``POST /v1/conflicts/{id}/resolve``.
+class KdbxResolveRequest {
+  const KdbxResolveRequest.upload({
+    required this.contentHash,
+    required this.sizeBytes,
+    this.hashAlgo = 'blake3',
+    this.note,
+  })  : mode = 'upload',
+        baseHash = null,
+        incomingHash = null,
+        choices = const [];
+
+  const KdbxResolveRequest.candidate({
+    required this.contentHash,
+    required this.sizeBytes,
+    this.hashAlgo = 'blake3',
+    this.note,
+  })  : mode = 'candidate',
+        baseHash = null,
+        incomingHash = null,
+        choices = const [];
+
+  const KdbxResolveRequest.entries({
+    required this.baseHash,
+    required this.incomingHash,
+    required this.choices,
+    this.note,
+  })  : mode = 'entries',
+        contentHash = null,
+        hashAlgo = 'blake3',
+        sizeBytes = null;
+
+  final String mode;
+  final String? contentHash;
+  final String hashAlgo;
+  final int? sizeBytes;
+  final String? note;
+  final String? baseHash;
+  final String? incomingHash;
+  final List<KdbxEntryChoice> choices;
+
+  Map<String, dynamic> toJson() {
+    final out = <String, dynamic>{'mode': mode};
+    if (contentHash != null) out['content_hash'] = contentHash;
+    out['hash_algo'] = hashAlgo;
+    if (sizeBytes != null) out['size_bytes'] = sizeBytes;
+    if (note != null) out['note'] = note;
+    if (baseHash != null) out['base_hash'] = baseHash;
+    if (incomingHash != null) out['incoming_hash'] = incomingHash;
+    if (choices.isNotEmpty) {
+      out['choices'] = [for (final c in choices) c.toJson()];
+    }
+    return out;
+  }
+}
+
+/// Contested entry for interactive merge UI (redacted only).
+class KdbxContestedEntry {
+  const KdbxContestedEntry({
+    required this.entryUuid,
+    required this.kind,
+    this.identity,
+    this.fields = const [],
+  });
+
+  final String entryUuid;
+
+  /// ``removed`` | ``added`` | ``modified``
+  final String kind;
+  final String? identity;
+  final List<String> fields;
+}
+
 class KdbxConflict {
   const KdbxConflict({
     required this.conflictId,
@@ -64,6 +152,76 @@ class KdbxConflict {
           KdbxConflictCandidate.fromJson(e as Map<String, dynamic>),
       ],
     );
+  }
+
+  KdbxConflictCandidate? candidateByRole(String role) {
+    for (final c in candidates) {
+      if (c.role == role) return c;
+    }
+    return null;
+  }
+
+  bool get hasExtraCandidates =>
+      candidates.any((c) => c.role == 'extra');
+
+  /// Entries that need a human choice (removed / added / modified).
+  List<KdbxContestedEntry> contestedEntries() {
+    final s = diffSummary;
+    if (s == null) return const [];
+    final out = <KdbxContestedEntry>[];
+    final seen = <String>{};
+
+    final removedUuids = s['removed_entry_uuids'] as List<dynamic>? ?? const [];
+    final removedPaths = s['removed_entries'] as List<dynamic>? ?? const [];
+    for (var i = 0; i < removedUuids.length; i++) {
+      final uuid = removedUuids[i].toString().toLowerCase();
+      if (uuid.isEmpty || !seen.add(uuid)) continue;
+      final identity = i < removedPaths.length ? removedPaths[i].toString() : null;
+      out.add(
+        KdbxContestedEntry(
+          entryUuid: uuid,
+          kind: 'removed',
+          identity: identity,
+        ),
+      );
+    }
+
+    final addedUuids = s['added_entry_uuids'] as List<dynamic>? ?? const [];
+    final addedPaths = s['added_entries'] as List<dynamic>? ?? const [];
+    for (var i = 0; i < addedUuids.length; i++) {
+      final uuid = addedUuids[i].toString().toLowerCase();
+      if (uuid.isEmpty || !seen.add(uuid)) continue;
+      final identity = i < addedPaths.length ? addedPaths[i].toString() : null;
+      out.add(
+        KdbxContestedEntry(
+          entryUuid: uuid,
+          kind: 'added',
+          identity: identity,
+        ),
+      );
+    }
+
+    final modified = s['modified_entries'] as List<dynamic>? ?? const [];
+    for (final raw in modified) {
+      if (raw is! Map) continue;
+      final uuidRaw = raw['uuid'];
+      if (uuidRaw == null) continue;
+      final uuid = uuidRaw.toString().toLowerCase();
+      if (uuid.isEmpty || !seen.add(uuid)) continue;
+      final fieldsRaw = raw['fields'];
+      final fields = fieldsRaw is List
+          ? [for (final f in fieldsRaw) f.toString()]
+          : <String>[];
+      out.add(
+        KdbxContestedEntry(
+          entryUuid: uuid,
+          kind: 'modified',
+          identity: raw['identity']?.toString(),
+          fields: fields,
+        ),
+      );
+    }
+    return out;
   }
 
   String get redactedDiffLabel {

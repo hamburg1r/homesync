@@ -10,7 +10,7 @@ from homesync_server.kdbx.diff import (
     classify_kdbx_paths,
     is_kdbx_file,
 )
-from homesync_server.kdbx.merge import merge_kdbx_paths
+from homesync_server.kdbx.merge import merge_kdbx_paths, merge_kdbx_with_choices
 
 __all__ = [
     "DiffClassification",
@@ -20,4 +20,5 @@ __all__ = [
     "classify_kdbx_paths",
     "is_kdbx_file",
     "merge_kdbx_paths",
+    "merge_kdbx_with_choices",
 ]

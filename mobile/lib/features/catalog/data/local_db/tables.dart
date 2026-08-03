@@ -142,3 +142,13 @@ class PinLocalPaths extends Table {
   @override
   Set<Column<Object>> get primaryKey => {fileId};
 }
+
+/// Last-seen directory mtime for incremental phone tracking scans.
+@DataClassName('ScanDirCacheRow')
+class ScanDirCache extends Table {
+  TextColumn get dirPath => text()();
+  IntColumn get mtimeMs => integer()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {dirPath};
+}

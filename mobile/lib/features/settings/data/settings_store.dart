@@ -27,6 +27,7 @@ class SettingsStore extends ChangeNotifier {
   static const _kUseDynamicColor = 'use_dynamic_color';
   static const _kSyncEnabled = 'sync_enabled';
   static const _kPinDestinationDir = 'pin_destination_dir';
+  static const _kFoldersView = 'browse_folders_view';
 
   /// Prefer DI `@preResolve`; available for tests.
   static Future<SettingsStore> open(AppLog log) async {
@@ -128,6 +129,15 @@ class SettingsStore extends ChangeNotifier {
       await _prefs.setString(_kPinDestinationDir, trimmed);
       _log.info('settings', 'pin_destination_dir set to $trimmed');
     }
+    notifyListeners();
+  }
+
+  /// Folder drill-in browse (false = flat list, default).
+  bool get foldersView => _prefs.getBool(_kFoldersView) ?? false;
+
+  Future<void> setFoldersView(bool value) async {
+    await _prefs.setBool(_kFoldersView, value);
+    _log.info('settings', 'browse_folders_view set to $value');
     notifyListeners();
   }
 

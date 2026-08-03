@@ -170,3 +170,99 @@ def merge_kdbx_paths(
         raise KdbxDiffError(f"merge failed: {exc}") from exc
 
     return dest
+
+
+def merge_kdbx_with_choices(
+    path_a: Path,
+    path_b: Path,
+    *,
+    password: str,
+    dest: Path,
+    choices: dict[str, str],
+) -> Path:
+    """Merge A (base) + B (incoming) applying per-entry keep decisions.
+
+    ``choices`` maps entry UUID string → ``base`` | ``incoming`` | ``discard``.
+
+    - Removals (UUID only in A): ``base`` keeps it; ``incoming``/``discard`` omit.
+      Default when unspecified: keep base (safer).
+    - Adds (UUID only in B): default copy in; ``discard`` skips.
+    - Shared: ``base`` leave A; ``incoming`` take B; ``discard`` delete;
+      default LWW by mtime (tie → B).
+    """
+    kp_a = _open(path_a, password)
+    kp_b = _open(path_b, password)
+
+    by_a: dict[str, EntryData] = {}
+    by_b: dict[str, EntryData] = {}
+    collect_entries_by_uuid(kp_a.root_group, by_a)
+    collect_entries_by_uuid(kp_b.root_group, by_b)
+
+    normalized = {
+        k.strip().lower(): v.strip().lower()
+        for k, v in choices.items()
+        if k and v
+    }
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path_a, dest)
+    try:
+        kp = _open(dest, password)
+    except KdbxUnlockError as exc:
+        dest.unlink(missing_ok=True)
+        raise KdbxDiffError(str(exc)) from exc
+
+    try:
+        # Removals: drop from dest when not keeping base.
+        for ukey, data_a in list(by_a.items()):
+            if ukey in by_b:
+                continue
+            keep = normalized.get(ukey.strip().lower(), "base")
+            if keep in ("incoming", "discard"):
+                if data_a.entry_uuid is None:
+                    continue
+                existing = _find_entry_uuid(kp, data_a.entry_uuid)
+                if existing is not None:
+                    kp.delete_entry(existing)
+
+        # Adds + shared.
+        for ukey, data_b in by_b.items():
+            if data_b.entry_uuid is None:
+                continue
+            raw_b = _find_entry_uuid(kp_b, data_b.entry_uuid)
+            if raw_b is None:
+                continue
+            keep = normalized.get(ukey.strip().lower())
+
+            if ukey not in by_a:
+                if keep == "discard":
+                    continue
+                # default / incoming / base (base N/A) → copy from B
+                dest_group = ensure_group_path(kp, data_b.group_path)
+                _copy_entry(kp, raw_b, dest_group)
+                continue
+
+            data_a = by_a[ukey]
+            existing = _find_entry_uuid(kp, data_b.entry_uuid)
+            if keep == "discard":
+                if existing is not None:
+                    kp.delete_entry(existing)
+                continue
+            if keep == "base":
+                continue
+            if keep == "incoming" or (keep is None and _prefer_b(data_a, data_b)):
+                if existing is None:
+                    dest_group = ensure_group_path(kp, data_b.group_path)
+                    _copy_entry(kp, raw_b, dest_group)
+                    continue
+                if data_b.group_path != build_group_path(existing.group):
+                    dest_group = ensure_group_path(kp, data_b.group_path)
+                    kp.move_entry(existing, dest_group)
+                _apply_fields(existing, data_b)
+
+        kp.save()
+    except Exception as exc:
+        dest.unlink(missing_ok=True)
+        raise KdbxDiffError(f"choice merge failed: {exc}") from exc
+
+    return dest

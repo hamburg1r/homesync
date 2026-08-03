@@ -20,6 +20,9 @@ final class CatalogState extends Equatable {
     this.searchQuery = '',
     this.syncEnabled = true,
     this.ingestProgress,
+    this.foldersView = false,
+    this.treePrefix = '',
+    this.hiddenExtensions = const {},
   });
 
   final CatalogViewState viewState;
@@ -35,6 +38,12 @@ final class CatalogState extends Equatable {
   final String searchQuery;
   final bool syncEnabled;
   final IngestFileProgress? ingestProgress;
+  /// When true, list folders first (drill-in); default flat file list.
+  final bool foldersView;
+  /// Current folder browse path when [foldersView] is on ('' = top).
+  final String treePrefix;
+  /// Lowercase extensions to hide in the list (view-only; does not affect sync).
+  final Set<String> hiddenExtensions;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -54,6 +63,11 @@ final class CatalogState extends Equatable {
     bool? syncEnabled,
     IngestFileProgress? ingestProgress,
     bool clearIngestProgress = false,
+    bool? foldersView,
+    String? treePrefix,
+    bool clearTreePrefix = false,
+    Set<String>? hiddenExtensions,
+    bool clearHiddenExtensions = false,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -72,6 +86,11 @@ final class CatalogState extends Equatable {
       ingestProgress: clearIngestProgress
           ? null
           : (ingestProgress ?? this.ingestProgress),
+      foldersView: foldersView ?? this.foldersView,
+      treePrefix: clearTreePrefix ? '' : (treePrefix ?? this.treePrefix),
+      hiddenExtensions: clearHiddenExtensions
+          ? const {}
+          : (hiddenExtensions ?? this.hiddenExtensions),
     );
   }
 
@@ -90,5 +109,8 @@ final class CatalogState extends Equatable {
         searchQuery,
         syncEnabled,
         ingestProgress,
+        foldersView,
+        treePrefix,
+        hiddenExtensions,
       ];
 }

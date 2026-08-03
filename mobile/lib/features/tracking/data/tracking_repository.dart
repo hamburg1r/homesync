@@ -262,6 +262,36 @@ class TrackingRepository {
     return rows.map(_localFromRow).toList();
   }
 
+  /// All local index rows keyed by normalized path (one query for scan).
+  Future<Map<String, LocalTrackedFile>> mapLocalFilesByPath() async {
+    final rows = await _db.select(_db.localTrackedFiles).get();
+    final out = <String, LocalTrackedFile>{};
+    for (final row in rows) {
+      final local = _localFromRow(row);
+      out[local.localPath] = local;
+    }
+    return out;
+  }
+
+  Future<Map<String, int>> mapScanDirMtimes() async {
+    final rows = await _db.select(_db.scanDirCache).get();
+    return {for (final row in rows) row.dirPath: row.mtimeMs};
+  }
+
+  Future<void> upsertScanDirMtime(String dirPath, int mtimeMs) async {
+    final norm = dirPath; // caller normalizes
+    await _db.into(_db.scanDirCache).insertOnConflictUpdate(
+          ScanDirCacheCompanion.insert(
+            dirPath: norm,
+            mtimeMs: mtimeMs,
+          ),
+        );
+  }
+
+  Future<void> clearScanDirCache() async {
+    await _db.delete(_db.scanDirCache).go();
+  }
+
   /// Pending or failed tracked files waiting for phone→PC ingest.
   ///
   /// Only rows bound to currently **enabled** rules (disabled rules do not

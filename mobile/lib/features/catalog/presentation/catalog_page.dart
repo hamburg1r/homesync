@@ -91,7 +91,10 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           previous.rules != current.rules ||
           previous.searchQuery != current.searchQuery ||
           previous.syncEnabled != current.syncEnabled ||
-          previous.refreshing != current.refreshing,
+          previous.refreshing != current.refreshing ||
+          previous.foldersView != current.foldersView ||
+          previous.treePrefix != current.treePrefix ||
+          previous.hiddenExtensions != current.hiddenExtensions,
       builder: (context, state) {
         return CatalogBrowseView(
           state: state.viewState,
@@ -105,6 +108,9 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           rules: state.rules,
           searchQuery: state.searchQuery,
           syncEnabled: state.syncEnabled,
+          foldersView: state.foldersView,
+          treePrefix: state.treePrefix,
+          hiddenExtensions: state.hiddenExtensions,
           progressBanner: BlocSelector<CatalogCubit, CatalogState,
               IngestFileProgress?>(
             selector: (s) => s.ingestProgress,
@@ -116,6 +122,7 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           onRefresh: () => context.read<CatalogCubit>().refresh(),
           onOpenSettings: () => _openSettings(context),
           onOpenConflicts: () => _openConflicts(context),
+          onForceRescan: () => context.read<CatalogCubit>().forceFullRescan(),
           onPin: (file) => _bringToPhone(context, file),
           onUnpin: (file) =>
               context.read<CatalogCubit>().removeFromDevice(file.fileId),
@@ -146,6 +153,16 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
               context.read<CatalogCubit>().setSearchQuery(q),
           onLoadThumb: (file) =>
               context.read<CatalogCubit>().thumbService.ensureThumb(file),
+          onSetFoldersView: (v) =>
+              context.read<CatalogCubit>().setFoldersView(v),
+          onOpenTreePrefix: (prefix) =>
+              context.read<CatalogCubit>().openTreePrefix(prefix),
+          onTreeNavigateUp: () =>
+              context.read<CatalogCubit>().treeNavigateUp(),
+          onToggleHiddenExtension: (ext) =>
+              context.read<CatalogCubit>().toggleHiddenExtension(ext),
+          onClearHiddenExtensions: () =>
+              context.read<CatalogCubit>().clearHiddenExtensions(),
         );
       },
     );

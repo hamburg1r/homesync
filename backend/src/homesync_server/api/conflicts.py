@@ -13,6 +13,7 @@ from homesync_server.kdbx import secrets as kdbx_secrets
 from homesync_server.schemas.catalog import (
     FileOut,
     KdbxConflictOut,
+    KdbxContentResult,
     KdbxResolveIn,
     KdbxSecretIn,
 )
@@ -40,7 +41,10 @@ def put_kdbx_secret(file_id: str, body: KdbxSecretIn, session: SessionDep) -> di
 @router.get("/conflicts", response_model=list[KdbxConflictOut])
 def list_conflicts(
     session: SessionDep,
-    state: str | None = Query("open"),
+    state: str | None = Query(
+        "active",
+        description="active=open|needs_secret|diff_failed; or an exact state",
+    ),
     limit: int = Query(100, ge=1, le=500),
 ) -> list[KdbxConflictOut]:
     rows = kdbx_svc.list_conflicts(session, state=state, limit=limit)
@@ -56,6 +60,18 @@ def get_conflict(conflict_id: str, session: SessionDep) -> KdbxConflictOut:
     return kdbx_svc.conflict_to_out(row)
 
 
+@router.post("/conflicts/{conflict_id}/recheck", response_model=KdbxContentResult | FileOut)
+def recheck_conflict(conflict_id: str, session: SessionDep) -> KdbxContentResult | FileOut:
+    """Re-classify stored candidates after the vault secret is set."""
+    try:
+        outcome = kdbx_svc.recheck_conflict(session, data_root(), conflict_id)
+    except kdbx_svc.ConflictNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="conflict not found") from exc
+    except kdbx_svc.ConflictValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return kdbx_svc.content_result_to_schema(outcome)
+
+
 @router.post("/conflicts/{conflict_id}/resolve", response_model=FileOut)
 def resolve_conflict(
     conflict_id: str,
@@ -67,15 +83,21 @@ def resolve_conflict(
             session,
             data_root(),
             conflict_id,
+            mode=body.mode,
             content_hash=body.content_hash,
             hash_algo=body.hash_algo,
             size_bytes=body.size_bytes,
             note=body.note,
+            base_hash=body.base_hash,
+            incoming_hash=body.incoming_hash,
+            choices=[c.model_dump() for c in body.choices],
         )
     except kdbx_svc.ConflictNotFoundError as exc:
         raise HTTPException(status_code=404, detail="conflict not found") from exc
     except kdbx_svc.ConflictValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except kdbx_svc.ConflictStaleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except catalog_svc.IngestValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except catalog_svc.CatalogConflictError as exc:

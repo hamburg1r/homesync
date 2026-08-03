@@ -217,20 +217,52 @@ When `POST /v1/files/{file_id}/content` targets a KeePass vault (title/path ends
 4. **Auto-mergeable real** diffs (no entry UUID removed on the incoming side — additions, field edits, and moves OK) → daemon **union-merges** both vaults, last-write-wins on entry fields/location by KeePass `mtime` (tie → incoming), stores the merged blob, promotes it as head.
 5. **True removals** (entry UUID present on head, absent on incoming) → HTTP **202** + conflict payload; open outbox.
 6. Extra divergent uploads while open are queued as more **candidates**.
-7. Phone merges offline when needed, uploads `AB`, then `POST /v1/conflicts/{id}/resolve`.
+7. Phone resolves interactively (preferred) or uploads a merged `AB`:
+   - `mode=entries` — keep/discard per contested entry UUID; daemon merges and promotes.
+   - `mode=candidate` — promote an existing candidate hash (Keep PC / Keep phone).
+   - `mode=upload` (default / legacy) — promote an already-uploaded blob.
+8. After saving the vault secret for a `needs_secret` conflict, `POST …/recheck` re-runs classify/auto-merge on stored candidates (no re-upload).
+
+Active conflict `diff_summary` (redacted) includes stable UUIDs for choices:
+
+- `removed_entry_uuids` / `added_entry_uuids`
+- `modified_entries`: `{ uuid, identity, fields }` (field **names** only)
+- `auto_mergeable`
 
 ```http
 PUT  /v1/files/{file_id}/kdbx-secret
 { "password": "…" }
+GET  /v1/conflicts?state=active
 GET  /v1/conflicts?state=open
+GET  /v1/conflicts?state=needs_secret
+# `active` (default) = open | needs_secret | diff_failed
+# exact state filters a single status; omit only via API clients that pass null
 GET  /v1/conflicts/{conflict_id}
+POST /v1/conflicts/{conflict_id}/recheck
 POST /v1/conflicts/{conflict_id}/resolve
-{ "content_hash": "…", "hash_algo": "blake3", "size_bytes": N, "note": "merged on phone" }
+# upload (legacy default):
+{ "mode": "upload", "content_hash": "…", "hash_algo": "blake3", "size_bytes": N, "note": "…" }
+# whole-vault candidate:
+{ "mode": "candidate", "content_hash": "…", "size_bytes": N }
+# interactive entry choices (base+incoming only; 409 if extra candidates):
+{
+  "mode": "entries",
+  "base_hash": "…",
+  "incoming_hash": "…",
+  "choices": [
+    { "entry_uuid": "…", "keep": "base" },
+    { "entry_uuid": "…", "keep": "incoming" },
+    { "entry_uuid": "…", "keep": "discard" }
+  ],
+  "note": "resolved on phone"
+}
 ```
 
-Secrets live in `~/.config/homesync/kdbx_secrets.json` (or `$HOMESYNC_KDBX_SECRETS`), mode `0600` — **not** in catalog SQLite. Diff summaries are redacted (field names / entry paths only, never password values).
+`entries` keep semantics: removals — `base` retain PC entry, `incoming`/`discard` omit; adds — default keep phone, `discard` drops; modified — `base` or `incoming` fields/location (unmentioned shared entries stay LWW). Secrets live in `~/.config/homesync/kdbx_secrets.json` (or `$HOMESYNC_KDBX_SECRETS`), mode `0600` — **not** in catalog SQLite. Diff summaries never include password values.
 
-Phone: drawer → **KeePass conflicts**; tracking does **not** require Bound to server.
+Phone: drawer / ⋮ → **KeePass conflicts** → detail (whole-vault + per-entry); tracking does **not** require Bound to server.
+
+Multi-way entry merge across 3+ candidates is out of scope (whole-vault pick only).
 
 ## Thumbnails (listed-mode previews)
 
@@ -312,7 +344,7 @@ sequenceDiagram
 - Standalone ingest uses `file_paths.root_id = NULL` and a synthetic `relative_path` under `ingest/<source_kind>/…`.
 - Linux retention: create pins the host `linux` device to `pinned` so the managed blob is kept.
 - Phone queue order: **blobs → file create → availability** (durable SharedPreferences queue; flushed on catalog sync). Tracking ingest hashes and uploads **one file at a time** via **resumable chunked upload** from the **original path** (no app-storage duplicate). Pin store is only for PC→phone materialization / small in-memory ingest. UI shows per-file progress (hash → upload). File detail shows on-device path (and catalog relative path when mirrored); **Open** launches an Android `ACTION_VIEW` intent via `open_filex`.
-- **Tracking rules (phone):** named regex/folder/**file** rules in Settings (empty = no auto upload). Group name optional (default `misc`). Top-level rules start **disabled** (enable manually after adding include filters). Folder rules recurse the whole directory tree; optional **include-regex children** under a folder (no children ⇒ track all; with children ⇒ must match ≥1 **enabled** child — never falls back to whole-tree). Disabling a rule cancels its pending/failed uploads (in-flight may finish). Per-rule optional tags and optional `source_kind` override (editable later; saving re-syncs matching synced files — tags via `PUT /files/{id}/tags`, provenance via `PATCH /files/{id}` `source_kind`). When multiple rules hit the same file, **tags union**; `source_kind` uses most-specific override (file → folder-child → folder → top-level regex → path heuristic). Folder ingest preserves `relative_path` as `track/<name>/<path under folder>` (not basename-only). Scanner walks granted storage roots for top-level regex/folder; file rules target one absolute path. When unset, `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the durable queue. Tracked files waiting to upload show chip **`pending`**; failures show **`failed`** — not availability `listed`. Catalog refresh indexes first then kicks **background ingest** (does not wait for uploads). On Android a `dataSync` foreground service starts early (while still foreground); main isolate hashes/enqueues, **upload HTTP runs in the task isolate** (no Drift there), then main commits catalog rows — so Home does not abort sockets and dual-isolate SQLite is avoided; durable queue resumes on app resume.
+- **Tracking rules (phone):** named regex/folder/**file** rules in Settings (empty = no auto upload). Group name optional (default `misc`). Top-level rules start **disabled** (enable manually after adding include filters). Folder rules recurse the whole directory tree; optional **include-regex children** under a folder (no children ⇒ track all; with children ⇒ must match ≥1 **enabled** child — never falls back to whole-tree). Disabling a rule cancels its pending/failed uploads (in-flight may finish). Scans use a **directory mtime cache** (skip unchanged trees) and a batched local index; AppBar menu can force a full rescan. Browse: flat list (default) or folders; group view can hide extensions (UI only). Per-rule optional tags and optional `source_kind` override (editable later; saving re-syncs matching synced files — tags via `PUT /files/{id}/tags`, provenance via `PATCH /files/{id}` `source_kind`). When multiple rules hit the same file, **tags union**; `source_kind` uses most-specific override (file → folder-child → folder → top-level regex → path heuristic). Folder ingest preserves `relative_path` as `track/<name>/<path under folder>` (not basename-only). Scanner walks granted storage roots for top-level regex/folder; file rules target one absolute path. When unset, `source_kind` is inferred from path (`DCIM`→camera, WhatsApp→whatsapp, Download→download, else `misc`). Matches auto-ingest via the durable queue. Tracked files waiting to upload show chip **`pending`**; failures show **`failed`** — not availability `listed`. Catalog refresh indexes first then kicks **background ingest** (does not wait for uploads). On Android a `dataSync` foreground service starts early (while still foreground); main isolate hashes/enqueues, **upload HTTP runs in the task isolate** (no Drift there), then main commits catalog rows — so Home does not abort sockets and dual-isolate SQLite is avoided; durable queue resumes on app resume.
 - **Sync pause (phone):** Settings → Sync with PC off skips catalog delta + tracking ingest; local catalog remains browsable. Soft-delete from a file’s detail sheet calls `DELETE /v1/files/{id}` (tombstone until `POST /v1/gc` / `homesync-gc`).
 
 ## WhatsApp-style restore (canonical story)

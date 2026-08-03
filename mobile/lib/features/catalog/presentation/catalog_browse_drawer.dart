@@ -96,7 +96,10 @@ class CatalogBrowseDrawer extends StatelessWidget {
               subtitle: const Text('Outbox for divergent .kdbx'),
               onTap: () {
                 Navigator.pop(context);
-                onOpenConflicts?.call();
+                // Wait for drawer route to finish or the sheet never appears.
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  onOpenConflicts?.call();
+                });
               },
             ),
             const Divider(),

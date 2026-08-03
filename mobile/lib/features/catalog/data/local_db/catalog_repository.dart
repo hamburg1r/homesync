@@ -473,27 +473,47 @@ class CatalogRepository {
     return path?.relativePath;
   }
 
+  /// Primary relative path for many files (one paths table read).
+  Future<Map<String, String>> mapPrimaryRelativePaths(
+    Iterable<String> fileIds,
+  ) async {
+    final want = fileIds.toSet();
+    if (want.isEmpty) return {};
+    final rows = await _db.select(_db.catalogPaths).get();
+    final byFile = <String, List<CatalogPathRow>>{};
+    for (final row in rows) {
+      if (!want.contains(row.fileId)) continue;
+      byFile.putIfAbsent(row.fileId, () => []).add(row);
+    }
+    final out = <String, String>{};
+    for (final e in byFile.entries) {
+      final paths = e.value;
+      paths.sort((a, b) => _pathRank(b).compareTo(_pathRank(a)));
+      out[e.key] = paths.first.relativePath;
+    }
+    return out;
+  }
+
+  int _pathRank(CatalogPathRow p) {
+    var score = 0;
+    if (p.isCurrent && p.goneAt == null) score += 100;
+    score += switch (p.sourceKind.toLowerCase()) {
+      'whatsapp' => 50,
+      'camera' => 40,
+      'download' => 30,
+      'misc' => 20,
+      'manual' => 10,
+      _ => 0,
+    };
+    return score;
+  }
+
   Future<CatalogPathRow?> _primaryPathRow(String fileId) async {
     final paths = await (_db.select(_db.catalogPaths)
           ..where((p) => p.fileId.equals(fileId)))
         .get();
     if (paths.isEmpty) return null;
-
-    int rank(CatalogPathRow p) {
-      var score = 0;
-      if (p.isCurrent && p.goneAt == null) score += 100;
-      score += switch (p.sourceKind.toLowerCase()) {
-        'whatsapp' => 50,
-        'camera' => 40,
-        'download' => 30,
-        'misc' => 20,
-        'manual' => 10,
-        _ => 0,
-      };
-      return score;
-    }
-
-    paths.sort((a, b) => rank(b).compareTo(rank(a)));
+    paths.sort((a, b) => _pathRank(b).compareTo(_pathRank(a)));
     return paths.first;
   }
 

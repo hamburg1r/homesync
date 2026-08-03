@@ -130,11 +130,28 @@ class KdbxContentResult(BaseModel):
     file: FileOut | None = None
 
 
+class KdbxEntryChoiceIn(BaseModel):
+    entry_uuid: str = Field(..., min_length=1)
+    keep: str = Field(..., min_length=1)  # base | incoming | discard
+
+
 class KdbxResolveIn(BaseModel):
-    content_hash: str = Field(..., min_length=4)
+    """Resolve a KeePass conflict.
+
+    Modes:
+    - ``upload`` (default): promote an already-uploaded blob (legacy).
+    - ``candidate``: promote an existing conflict candidate hash (no new upload).
+    - ``entries``: server merges base+incoming using per-entry choices.
+    """
+
+    mode: str = Field(default="upload", min_length=1)
+    content_hash: str | None = Field(default=None, min_length=4)
     hash_algo: str = Field(default="blake3", min_length=1)
-    size_bytes: int = Field(..., ge=0)
+    size_bytes: int | None = Field(default=None, ge=0)
     note: str | None = None
+    base_hash: str | None = Field(default=None, min_length=4)
+    incoming_hash: str | None = Field(default=None, min_length=4)
+    choices: list[KdbxEntryChoiceIn] = Field(default_factory=list)
 
 
 class AvailabilityOut(BaseModel):

@@ -66,6 +66,8 @@ class SemanticDiffResult:
     added_entries: list[str] = field(default_factory=list)
     # identity -> list of field names that changed (never values)
     modified_fields: dict[str, list[str]] = field(default_factory=dict)
+    # Stable per-entry rows for clients (uuid + identity + fields).
+    modified_entry_details: list[dict[str, Any]] = field(default_factory=list)
     moved_entries: list[dict[str, str]] = field(default_factory=list)
     # UUID keys present in A but not B (true removals from B's perspective)
     removed_entry_uuids: list[str] = field(default_factory=list)
@@ -94,6 +96,13 @@ class SemanticDiffResult:
 
     def redacted_summary(self) -> dict[str, Any]:
         """JSON-safe summary safe to store/show (no secrets)."""
+        modified = list(self.modified_entry_details)
+        if not modified and self.modified_fields:
+            # Back-compat for callers that only fill modified_fields.
+            modified = [
+                {"uuid": None, "identity": ident, "fields": fields}
+                for ident, fields in sorted(self.modified_fields.items())
+            ]
         return {
             "classification": self.classification.value,
             "removed_groups": list(self.removed_groups),
@@ -101,10 +110,7 @@ class SemanticDiffResult:
             "removed_entries": list(self.removed_entries),
             "added_entries": list(self.added_entries),
             "moved_entries": list(self.moved_entries),
-            "modified_entries": [
-                {"identity": ident, "fields": fields}
-                for ident, fields in sorted(self.modified_fields.items())
-            ],
+            "modified_entries": modified,
             "removed_entry_uuids": list(self.removed_entry_uuids),
             "added_entry_uuids": list(self.added_entry_uuids),
             "auto_mergeable": self.is_auto_mergeable,
@@ -282,6 +288,8 @@ def classify_kdbx_paths(
         added_entries = sorted(p for p in added_entries if p not in move_new_paths)
 
         modified_fields: dict[str, list[str]] = {}
+        modified_entry_details: list[dict[str, Any]] = []
+        seen_mod_idents: set[str] = set()
         for ukey in sorted(uuids1 & uuids2):
             e1 = by_uuid1[ukey]
             e2 = by_uuid2[ukey]
@@ -289,15 +297,24 @@ def classify_kdbx_paths(
             if changes:
                 # Prefer path identity from A for summary stability.
                 modified_fields[e1.identity] = changes
+                modified_entry_details.append(
+                    {"uuid": ukey, "identity": e1.identity, "fields": changes}
+                )
+                seen_mod_idents.add(e1.identity)
 
         # Path-key field diffs when both sides share a path identity (covers
         # independently created DBs that collide on title but not UUID).
         for key in sorted(keys1 & keys2):
-            if key in modified_fields:
+            if key in seen_mod_idents:
                 continue
             changes = _field_changes(entries1[key], entries2[key])
             if changes:
                 modified_fields[key] = changes
+                e1 = entries1[key]
+                uuid_val = str(e1.entry_uuid) if e1.entry_uuid is not None else None
+                modified_entry_details.append(
+                    {"uuid": uuid_val, "identity": key, "fields": changes}
+                )
 
         has_real = bool(
             removed_groups
@@ -316,6 +333,7 @@ def classify_kdbx_paths(
             removed_entries=removed_entries,
             added_entries=added_entries,
             modified_fields=modified_fields,
+            modified_entry_details=modified_entry_details,
             moved_entries=moved_entries,
             removed_entry_uuids=removed_uuids,
             added_entry_uuids=added_uuids,

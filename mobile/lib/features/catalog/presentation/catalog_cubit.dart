@@ -16,6 +16,7 @@ import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_filters.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_tree.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_state.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
@@ -41,7 +42,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.backgroundIngest,
     required this.settings,
     required this.log,
-  }) : super(CatalogState(syncEnabled: settings.syncEnabled)) {
+  }) : super(CatalogState(
+          syncEnabled: settings.syncEnabled,
+          foldersView: settings.foldersView,
+        )) {
     _filesSub = repository.watchActiveFiles().listen(_onCatalogFiles);
     _rulesSub = tracking.watchRules().listen((rules) {
       if (!isClosed) emit(state.copyWith(rules: rules));
@@ -68,8 +72,21 @@ class CatalogCubit extends Cubit<CatalogState> {
 
   void _onSettingsChanged() {
     if (isClosed) return;
+    var next = state;
     if (state.syncEnabled != settings.syncEnabled) {
-      emit(state.copyWith(syncEnabled: settings.syncEnabled));
+      next = next.copyWith(syncEnabled: settings.syncEnabled);
+    }
+    if (state.foldersView != settings.foldersView) {
+      next = next.copyWith(
+        foldersView: settings.foldersView,
+        clearTreePrefix: !settings.foldersView,
+      );
+    }
+    if (!identical(next, state) && next != state) {
+      emit(next);
+      if (state.foldersView != settings.foldersView) {
+        unawaited(_emitBrowseList());
+      }
     }
   }
 
@@ -192,9 +209,56 @@ class CatalogCubit extends Cubit<CatalogState> {
         groupRuleId: groupRuleId,
         groupTitle: groupTitle,
         clearGroup: mode != BrowseMode.group,
+        clearTreePrefix: true,
+        clearHiddenExtensions: mode != BrowseMode.group,
       ),
     );
     await _emitBrowseList();
+  }
+
+  Future<void> setFoldersView(bool enabled) async {
+    await settings.setFoldersView(enabled);
+    if (isClosed) return;
+    emit(
+      state.copyWith(
+        foldersView: enabled,
+        clearTreePrefix: !enabled,
+      ),
+    );
+    await _emitBrowseList();
+  }
+
+  Future<void> openTreePrefix(String prefix) async {
+    emit(state.copyWith(treePrefix: prefix));
+    await _emitBrowseList();
+  }
+
+  Future<void> treeNavigateUp() async {
+    final cur = state.treePrefix;
+    if (cur.isEmpty) return;
+    final parent = p.dirname(cur);
+    final next = parent == '.' || parent == '/' ? '' : parent;
+    emit(state.copyWith(treePrefix: next));
+    await _emitBrowseList();
+  }
+
+  Future<void> toggleHiddenExtension(String extension) async {
+    final ext = extension.trim().toLowerCase();
+    if (ext.isEmpty) return;
+    final next = Set<String>.from(state.hiddenExtensions);
+    if (!next.add(ext)) next.remove(ext);
+    emit(state.copyWith(hiddenExtensions: next));
+    await _emitBrowseList();
+  }
+
+  Future<void> clearHiddenExtensions() async {
+    emit(state.copyWith(clearHiddenExtensions: true));
+    await _emitBrowseList();
+  }
+
+  Future<void> forceFullRescan() async {
+    await scanner.invalidateDirCache();
+    await refresh(forceFullScan: true);
   }
 
   Future<void> setDeviceAndSyncedOnly(bool value) async {
@@ -231,16 +295,54 @@ class CatalogCubit extends Cubit<CatalogState> {
           _catalogFiles,
           enabled: state.deviceAndSyncedOnly,
         );
+        final paths = await repository.mapPrimaryRelativePaths(
+          files.map((f) => f.fileId),
+        );
+        files = [
+          for (final f in files)
+            f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
+        ];
       case BrowseMode.group:
         final ids = await tracking.groupRuleIds(state.groupRuleId);
         final locals = await tracking.listLocalFiles(ruleIds: ids);
         files = await _localsToCatalogFiles(locals);
+        TrackingRule? groupRule;
+        for (final r in state.rules) {
+          if (r.id == state.groupRuleId) {
+            groupRule = r;
+            break;
+          }
+        }
+        final folderRoot = groupRule?.kind == TrackingRuleKind.folder
+            ? groupRule!.patternOrUri
+            : null;
+        if (folderRoot != null) {
+          final root = p.normalize(folderRoot);
+          files = [
+            for (final f in files)
+              f.copyWith(
+                browsePath: _relativeBrowsePath(f.browsePath, root),
+              ),
+          ];
+        } else {
+          // Strip shared absolute prefix so tree isn't storage/emulated/0/…
+          files = _withStrippedCommonPrefix(files);
+        }
       case BrowseMode.trackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listTracked());
+        files = _withStrippedCommonPrefix(files);
       case BrowseMode.untrackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listUntracked());
+        files = _withStrippedCommonPrefix(files);
       case BrowseMode.removedFromPc:
         files = await repository.listTombstonedFiles();
+        final paths = await repository.mapPrimaryRelativePaths(
+          files.map((f) => f.fileId),
+        );
+        files = [
+          for (final f in files)
+            f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
+        ];
     }
     if (state.deviceAndSyncedOnly &&
         state.browseMode != BrowseMode.allCatalog &&
@@ -254,6 +356,10 @@ class CatalogCubit extends Cubit<CatalogState> {
       files = files.where((f) => f.hasLocalBytes).toList();
     }
     files = applyCatalogSearch(files, query: state.searchQuery);
+    files = applyHiddenExtensions(
+      files,
+      hidden: state.hiddenExtensions,
+    );
     if (isClosed) return;
     final preserve =
         state.viewState == CatalogViewState.error ||
@@ -278,7 +384,7 @@ class CatalogCubit extends Cubit<CatalogState> {
       if (local.isSynced && local.fileId != null) {
         final catalog = await repository.getFile(local.fileId!);
         if (catalog != null) {
-          out.add(catalog);
+          out.add(catalog.copyWith(browsePath: local.localPath));
           continue;
         }
       }
@@ -304,13 +410,77 @@ class CatalogCubit extends Cubit<CatalogState> {
           hasLocalBytes: true,
           primarySourceKind: local.sourceKind,
           localUpload: upload,
+          browsePath: local.localPath,
         ),
       );
     }
     return out;
   }
 
-  Future<void> refresh({bool showSpinnerWhenEmpty = false}) async {
+  String _relativeBrowsePath(String? absolute, String root) {
+    final path = (absolute ?? '').replaceAll('\\', '/');
+    final base = root.replaceAll('\\', '/');
+    if (path.isEmpty) return '';
+    if (path == base) return p.basename(path);
+    if (path.startsWith('$base/')) {
+      return path.substring(base.length + 1);
+    }
+    return p.basename(path);
+  }
+
+  List<CatalogFile> _withStrippedCommonPrefix(List<CatalogFile> files) {
+    final paths = [
+      for (final f in files)
+        if (f.browsePath != null && f.browsePath!.isNotEmpty)
+          f.browsePath!.replaceAll('\\', '/'),
+    ];
+    if (paths.length < 2) {
+      return [
+        for (final f in files)
+          f.copyWith(
+            browsePath: f.browsePath == null
+                ? f.displayName
+                : p.basename(f.browsePath!),
+          ),
+      ];
+    }
+    var prefix = paths.first;
+    for (final path in paths.skip(1)) {
+      while (prefix.isNotEmpty && !path.startsWith(prefix)) {
+        final cut = prefix.lastIndexOf('/');
+        prefix = cut <= 0 ? '' : prefix.substring(0, cut);
+      }
+      if (prefix.isEmpty) break;
+    }
+    // Keep prefix as a directory (drop trailing file segment if all share a dir).
+    if (prefix.isNotEmpty && !prefix.endsWith('/')) {
+      final asDir = paths.every(
+        (path) => path == prefix || path.startsWith('$prefix/'),
+      );
+      if (!asDir) {
+        final cut = prefix.lastIndexOf('/');
+        prefix = cut <= 0 ? '' : prefix.substring(0, cut);
+      }
+    }
+    if (prefix.isEmpty) {
+      return [
+        for (final f in files)
+          f.copyWith(browsePath: p.basename(f.browsePath ?? f.displayName)),
+      ];
+    }
+    final root = prefix.endsWith('/')
+        ? prefix.substring(0, prefix.length - 1)
+        : prefix;
+    return [
+      for (final f in files)
+        f.copyWith(browsePath: _relativeBrowsePath(f.browsePath, root)),
+    ];
+  }
+
+  Future<void> refresh({
+    bool showSpinnerWhenEmpty = false,
+    bool forceFullScan = false,
+  }) async {
     final showSpinner =
         showSpinnerWhenEmpty && state.files.isEmpty && !state.refreshing;
     emit(
@@ -361,6 +531,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     try {
       await scanner.scanAndIngest(
         ingestMatches: false,
+        forceFullScan: forceFullScan,
         onProgress: onIngest,
         onIndexed: () => _emitBrowseList(),
       );
@@ -424,6 +595,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<void> onRulesChanged() async {
     final rules = await tracking.listRules();
     if (!isClosed) emit(state.copyWith(rules: rules));
+    await scanner.invalidateDirCache();
     if (!settings.syncEnabled) {
       await _emitBrowseList();
       return;
@@ -431,6 +603,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     try {
       await scanner.scanAndIngest(
         ingestMatches: false,
+        forceFullScan: true,
         onProgress: (p) {
           _emitIngestProgress(p);
           unawaited(backgroundIngest.updateKeepAliveProgress(p));
@@ -724,7 +897,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     return '${text.substring(0, maxChars)}…';
   }
 
-  Future<List<KdbxConflict>> listKdbxConflicts({String? state = 'open'}) {
+  Future<List<KdbxConflict>> listKdbxConflicts({String? state = 'active'}) {
     return api.listConflicts(state: state);
   }
 
@@ -734,6 +907,44 @@ class CatalogCubit extends Cubit<CatalogState> {
       return null;
     } catch (e) {
       log.warn('catalog', 'kdbx secret failed: $e');
+      return e.toString();
+    }
+  }
+
+  Future<Object?> recheckKdbxConflict(String conflictId) async {
+    try {
+      return await api.recheckConflict(conflictId);
+    } catch (e) {
+      log.warn('catalog', 'kdbx recheck failed: $e');
+      return e.toString();
+    }
+  }
+
+  Future<String?> resolveKdbxConflictRequest({
+    required String conflictId,
+    required String fileId,
+    required KdbxResolveRequest request,
+  }) async {
+    try {
+      final updated = await api.resolveConflict(conflictId, request);
+      await repository.upsertFile(updated);
+      final all = await tracking.listTracked();
+      for (final row in all) {
+        if (row.fileId == fileId) {
+          await tracking.markSynced(
+            localPath: row.localPath,
+            fileId: updated.fileId,
+            contentHash: updated.contentHash,
+            sizeBytes: updated.sizeBytes,
+          );
+        }
+      }
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'kdbx resolve failed: $e');
       return e.toString();
     }
   }
@@ -763,42 +974,15 @@ class CatalogCubit extends Cubit<CatalogState> {
           }
         },
       );
-      final updated = await api.resolveConflict(
-        conflictId,
-        FileContentRequest(
+      return resolveKdbxConflictRequest(
+        conflictId: conflictId,
+        fileId: fileId,
+        request: KdbxResolveRequest.upload(
           contentHash: hash,
-          hashAlgo: ContentHash.algo,
           sizeBytes: size,
           note: 'merged on phone',
         ),
       );
-      await repository.upsertFile(updated);
-      final tracked = await tracking.getLocalFile(path);
-      if (tracked != null) {
-        await tracking.markSynced(
-          localPath: path,
-          fileId: updated.fileId,
-          contentHash: updated.contentHash,
-          sizeBytes: updated.sizeBytes,
-        );
-      } else {
-        // Also update any tracked row bound to this file_id.
-        final all = await tracking.listTracked();
-        for (final row in all) {
-          if (row.fileId == fileId) {
-            await tracking.markSynced(
-              localPath: row.localPath,
-              fileId: updated.fileId,
-              contentHash: updated.contentHash,
-              sizeBytes: updated.sizeBytes,
-            );
-          }
-        }
-      }
-      final files = await repository.listActiveFiles();
-      _catalogFiles = files;
-      await _emitBrowseList();
-      return null;
     } catch (e) {
       log.warn('catalog', 'kdbx resolve failed: $e');
       return e.toString();

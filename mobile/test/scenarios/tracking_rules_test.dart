@@ -861,6 +861,70 @@ void main() {
       expect((await harness.tracking.listTracked()).single.isSynced, isTrue);
     });
 
+    test('second scan skips unchanged dirs via mtime cache', () async {
+      var creates = 0;
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            creates += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "mtime-$creates",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'mtime-1', mode: 'pinned');
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/Stable')
+        ..createSync(recursive: true);
+      await File('${folder.path}/one.txt').writeAsString('one');
+
+      await harness.tracking.addRule(
+        name: 'stable',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+        enabled: true,
+      );
+
+      final first = await harness.scanner.scanAndIngest();
+      expect(first.tracked, 1);
+      expect(first.ingested, 1);
+
+      final second = await harness.scanner.scanAndIngest(ingestMatches: false);
+      expect(second.tracked, 1);
+      expect(second.seen, greaterThanOrEqualTo(1));
+      expect(creates, 1);
+    });
+
     test('failed ingest with unchanged mtime reuses digest (no rehash gate)',
         () async {
       var creates = 0;
