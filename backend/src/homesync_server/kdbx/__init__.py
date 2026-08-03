@@ -1,4 +1,4 @@
-"""KeePass (.kdbx) semantic diff and conflict helpers."""
+"""KeePass (.kdbx) semantic diff, merge, and conflict helpers."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from homesync_server.kdbx.diff import (
     classify_kdbx_paths,
     is_kdbx_file,
 )
+from homesync_server.kdbx.merge import merge_kdbx_paths
 
 __all__ = [
     "DiffClassification",
@@ -18,4 +19,5 @@ __all__ = [
     "SemanticDiffResult",
     "classify_kdbx_paths",
     "is_kdbx_file",
+    "merge_kdbx_paths",
 ]

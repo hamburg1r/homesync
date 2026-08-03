@@ -1,8 +1,9 @@
-"""KeePass conflict outbox: keep divergent heads, trivial auto-resolve, phone resolve."""
+"""KeePass conflict outbox: keep divergent heads, auto-merge, phone resolve."""
 
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,11 @@ from sqlalchemy.orm import Session, selectinload
 from homesync_server.kdbx import secrets as kdbx_secrets
 from homesync_server.kdbx.diff import (
     DiffClassification,
+    SemanticDiffResult,
     classify_kdbx_paths,
     is_kdbx_file,
 )
+from homesync_server.kdbx.merge import merge_kdbx_paths
 from homesync_server.models import File, FilePath, FileVersion, KdbxConflict, KdbxConflictCandidate
 from homesync_server.schemas.catalog import (
     FileOut,
@@ -25,6 +28,7 @@ from homesync_server.schemas.catalog import (
 )
 from homesync_server.services import blobs as blob_svc
 from homesync_server.services import catalog as catalog_svc
+from homesync_server.storage import hash_bytes
 from homesync_server.util import new_uuid, next_updated_at, utc_now_iso
 
 
@@ -182,12 +186,161 @@ def _run_diff(
     hash_a: str,
     hash_b: str,
     password: str,
-) -> Any:
+) -> SemanticDiffResult:
     from homesync_server.storage import blob_path
 
     path_a = blob_path(data_root, algo, hash_a)
     path_b = blob_path(data_root, algo, hash_b)
     return classify_kdbx_paths(path_a, path_b, password=password)
+
+
+def _build_merged_blob(
+    data_root: Path,
+    algo: str,
+    hash_a: str,
+    hash_b: str,
+    password: str,
+) -> tuple[str, int]:
+    """Merge A+B into managed store; return (digest, size_bytes)."""
+    from homesync_server.storage import blob_path
+
+    path_a = blob_path(data_root, algo, hash_a)
+    path_b = blob_path(data_root, algo, hash_b)
+    with tempfile.TemporaryDirectory(prefix="homesync-kdbx-merge-") as tmp:
+        dest = Path(tmp) / "merged.kdbx"
+        merge_kdbx_paths(path_a, path_b, password=password, dest=dest)
+        body = dest.read_bytes()
+    digest = hash_bytes(body, algo=algo)
+    blob_svc.put_blob_bytes(data_root, algo, digest, body)
+    return digest, len(body)
+
+
+def _archive_hash(
+    session: Session,
+    file_id: str,
+    *,
+    content_hash: str,
+    size_bytes: int,
+    note: str,
+    seen: set[str],
+) -> None:
+    if content_hash in seen:
+        return
+    session.add(
+        FileVersion(
+            version_id=new_uuid(),
+            file_id=file_id,
+            content_hash=content_hash,
+            size_bytes=size_bytes,
+            created_at=utc_now_iso(),
+            note=note,
+        )
+    )
+    seen.add(content_hash)
+
+
+def _promote_merged_head(
+    session: Session,
+    data_root: Path,
+    file_row: File,
+    *,
+    algo: str,
+    merged_hash: str,
+    merged_size: int,
+    archive: list[tuple[str, int, str]],
+    note: str,
+) -> File:
+    """Set merged blob as head; archive prior hashes into versions."""
+    previous_head = catalog_svc._stored_head_hash(file_row.content_hash)
+    seen: set[str] = {merged_hash}
+    if previous_head != merged_hash:
+        _archive_hash(
+            session,
+            file_row.file_id,
+            content_hash=previous_head,
+            size_bytes=file_row.size_bytes,
+            note=note or "pre-merge head",
+            seen=seen,
+        )
+    for h, size, n in archive:
+        _archive_hash(
+            session,
+            file_row.file_id,
+            content_hash=h,
+            size_bytes=size,
+            note=n,
+            seen=seen,
+        )
+
+    other = session.scalars(
+        select(File).where(
+            File.content_hash == merged_hash,
+            File.hash_algo == algo,
+            File.file_id != file_row.file_id,
+        )
+    ).first()
+    if other is not None:
+        if other.deleted_at is not None:
+            catalog_svc._free_tombstone_hash(session, other)
+        else:
+            raise catalog_svc.CatalogConflictError(other)
+
+    file_row.content_hash = merged_hash
+    file_row.size_bytes = merged_size
+    file_row.updated_at = next_updated_at(file_row.updated_at)
+    from homesync_server.db import ensure_local_device
+    from homesync_server.services import availability as avail_svc
+
+    linux = ensure_local_device(session)
+    avail_svc.set_availability(
+        session, file_row.file_id, linux.device_id, mode="pinned"
+    )
+    session.flush()
+    return catalog_svc.get_file(session, file_row.file_id)
+
+
+def _auto_merge_and_promote(
+    session: Session,
+    data_root: Path,
+    file_row: File,
+    *,
+    algo: str,
+    head_hash: str,
+    incoming_hash: str,
+    incoming_size: int,
+    password: str,
+    note: str | None,
+    conflict: KdbxConflict | None = None,
+) -> ContentOutcome:
+    """Union-merge head+incoming (LWW), promote result, optionally close outbox."""
+    merged_hash, merged_size = _build_merged_blob(
+        data_root, algo, head_hash, incoming_hash, password
+    )
+    updated = _promote_merged_head(
+        session,
+        data_root,
+        file_row,
+        algo=algo,
+        merged_hash=merged_hash,
+        merged_size=merged_size,
+        archive=[
+            (incoming_hash, incoming_size, note or "kdbx merge candidate"),
+        ],
+        note=note or "kdbx auto-merge",
+    )
+    if conflict is not None:
+        conflict.state = "resolved"
+        conflict.resolved_content_hash = merged_hash
+        conflict.updated_at = next_updated_at(conflict.updated_at)
+        conflict.diff_summary_json = json.dumps(
+            {
+                "classification": "real",
+                "auto_merged": True,
+                "resolved_content_hash": merged_hash,
+            }
+        )
+        session.flush()
+    return ContentOutcome(kind="file", file=updated)
 
 
 def apply_kdbx_content(
@@ -201,7 +354,7 @@ def apply_kdbx_content(
     note: str | None = None,
     source_device_id: str | None = None,
 ) -> ContentOutcome:
-    """kdbx-aware content replace: trivial auto-resolve or open outbox.
+    """kdbx-aware content replace: trivial / auto-merge or open outbox.
 
     Non-kdbx files fall through to normal ``update_file_content``.
     """
@@ -328,6 +481,29 @@ def apply_kdbx_content(
                         other_size=size_bytes,
                         note=note or "trivial kdbx auto-resolve",
                     )
+                elif diff.is_auto_mergeable and n_cands <= 2:
+                    base_hash = base.content_hash
+                    try:
+                        return _auto_merge_and_promote(
+                            session,
+                            data_root,
+                            row,
+                            algo=algo,
+                            head_hash=base_hash,
+                            incoming_hash=digest,
+                            incoming_size=size_bytes,
+                            password=password,
+                            note=note or "kdbx auto-merge",
+                            conflict=open_c,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — merge/IO; keep outbox
+                        open_c.state = "diff_failed"
+                        open_c.diff_summary_json = json.dumps(
+                            {
+                                "classification": "diff_failed",
+                                "error": f"auto-merge failed: {exc}",
+                            }
+                        )
                 else:
                     open_c.state = "open"
         elif not password:
@@ -407,6 +583,43 @@ def apply_kdbx_content(
             note=note or "trivial kdbx auto-resolve",
         )
         return ContentOutcome(kind="file", file=updated)
+
+    if diff.is_auto_mergeable:
+        try:
+            return _auto_merge_and_promote(
+                session,
+                data_root,
+                row,
+                algo=algo,
+                head_hash=head_hash,
+                incoming_hash=digest,
+                incoming_size=size_bytes,
+                password=password,
+                note=note or "kdbx auto-merge",
+                conflict=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — merge/IO; open outbox
+            conflict = _create_conflict(
+                session,
+                file_row=row,
+                incoming_hash=digest,
+                incoming_size=size_bytes,
+                source_device_id=source_device_id,
+                state="diff_failed",
+                summary={
+                    "classification": "diff_failed",
+                    "error": f"auto-merge failed: {exc}",
+                    **{
+                        k: v
+                        for k, v in diff.redacted_summary().items()
+                        if k != "classification" and k != "error"
+                    },
+                },
+            )
+            session.flush()
+            return ContentOutcome(
+                kind="conflict", conflict=get_conflict(session, conflict.conflict_id)
+            )
 
     conflict = _create_conflict(
         session,

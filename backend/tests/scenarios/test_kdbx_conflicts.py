@@ -1,20 +1,22 @@
-"""Milestone 9: KeePass conflict outbox (trivial auto vs real resolve)."""
+"""Milestone 9: KeePass conflict outbox (trivial / auto-merge / real resolve)."""
 
 from __future__ import annotations
 
+import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from pykeepass import create_database
+from pykeepass import PyKeePass, create_database
 
 from homesync_server.config import DEFAULT_HASH_ALGO
 from homesync_server.db import bootstrap
 from homesync_server.db.migrate import current_version
-from homesync_server.kdbx.diff import DiffClassification, classify_kdbx_paths
 from homesync_server.kdbx import secrets as kdbx_secrets
+from homesync_server.kdbx.diff import DiffClassification, classify_kdbx_paths
+from homesync_server.kdbx.merge import merge_kdbx_paths
 from homesync_server.storage import blob_path, hash_bytes
-
 
 VAULT_PW = "test-master-password"
 
@@ -23,6 +25,10 @@ def _make_kdbx(path: Path, *, title: str, password: str, username: str = "u") ->
     kp = create_database(str(path), password=VAULT_PW)
     kp.add_entry(kp.root_group, title, username, password)
     kp.save()
+
+
+def _clone_kdbx(src: Path, dest: Path) -> None:
+    shutil.copy2(src, dest)
 
 
 def _put_bytes(client: TestClient, data_root: Path, payload: bytes) -> str:
@@ -70,6 +76,16 @@ def _create_vault_file(
     return created.json()
 
 
+def _set_secret(client: TestClient, file_id: str) -> None:
+    assert (
+        client.put(
+            f"/v1/files/{file_id}/kdbx-secret",
+            json={"password": VAULT_PW},
+        ).status_code
+        == 200
+    )
+
+
 def test_classify_trivial_vs_real(tmp_path: Path) -> None:
     a = tmp_path / "a.kdbx"
     b_same = tmp_path / "b_same.kdbx"
@@ -87,6 +103,75 @@ def test_classify_trivial_vs_real(tmp_path: Path) -> None:
     assert "password" in real.modified_fields.get("Root/Bank", [])
     summary = real.redacted_summary()
     assert "secret" not in str(summary).lower() or "secret2" not in str(summary)
+
+
+def test_classify_move_is_auto_mergeable(tmp_path: Path) -> None:
+    a = tmp_path / "a.kdbx"
+    b = tmp_path / "b.kdbx"
+    _make_kdbx(a, title="Bank", password="secret1")
+    _clone_kdbx(a, b)
+    kp = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp.find_entries(title="Bank", first=True)
+    assert entry is not None
+    work = kp.add_group(kp.root_group, "Work")
+    kp.move_entry(entry, work)
+    kp.save()
+
+    diff = classify_kdbx_paths(a, b, password=VAULT_PW)
+    assert diff.classification == DiffClassification.real
+    assert diff.moved_entries
+    assert diff.removed_entry_uuids == []
+    assert diff.is_auto_mergeable
+
+
+def test_classify_deletion_not_auto_mergeable(tmp_path: Path) -> None:
+    a = tmp_path / "a.kdbx"
+    b = tmp_path / "b.kdbx"
+    _make_kdbx(a, title="Bank", password="secret1")
+    _clone_kdbx(a, b)
+    kp = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp.find_entries(title="Bank", first=True)
+    assert entry is not None
+    kp.delete_entry(entry)
+    kp.save()
+
+    diff = classify_kdbx_paths(a, b, password=VAULT_PW)
+    assert diff.classification == DiffClassification.real
+    assert diff.removed_entry_uuids
+    assert not diff.is_auto_mergeable
+
+
+def test_merge_add_and_lww_password(tmp_path: Path) -> None:
+    a = tmp_path / "a.kdbx"
+    b = tmp_path / "b.kdbx"
+    out = tmp_path / "out.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+
+    kp_a = PyKeePass(str(a), password=VAULT_PW)
+    bank_a = kp_a.find_entries(title="Bank", first=True)
+    assert bank_a is not None
+    bank_uuid = bank_a.uuid
+    kp_a.add_entry(kp_a.root_group, "OnlyA", "u", "a-secret")
+    kp_a.save()
+
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    bank_b = kp_b.find_entries(title="Bank", first=True)
+    assert bank_b is not None
+    bank_b.password = "from-b"
+    bank_b.mtime = datetime.now(UTC) + timedelta(hours=1)
+    kp_b.add_entry(kp_b.root_group, "OnlyB", "u", "b-secret")
+    kp_b.save()
+
+    # B is missing OnlyA → not auto-mergeable as content upload; merge helper
+    # still unions when called directly (service gates on is_auto_mergeable).
+    merge_kdbx_paths(a, b, password=VAULT_PW, dest=out)
+    merged = PyKeePass(str(out), password=VAULT_PW)
+    titles = {e.title for e in merged.entries}
+    assert "OnlyA" in titles and "OnlyB" in titles
+    bank = merged.find_entries(uuid=bank_uuid, first=True)
+    assert bank is not None
+    assert bank.password == "from-b"
 
 
 def test_kdbx_trivial_auto_resolves(
@@ -107,31 +192,20 @@ def test_kdbx_trivial_auto_resolves(
     b = tmp_path / "v2.kdbx"
     _make_kdbx(a, title="Bank", password="same")
     _make_kdbx(b, title="Bank", password="same")
-    # Ensure byte hashes differ (re-save with different notes empty still may collide).
-    # Touch by adding then removing is heavy; force distinct bytes via unused custom property.
-    from pykeepass import PyKeePass
+    from pykeepass import PyKeePass as PK
 
-    kp = PyKeePass(str(b), password=VAULT_PW)
-    # Changing nothing semantic but re-saving often changes ciphertext; if equal, mutate title then revert.
+    kp = PK(str(b), password=VAULT_PW)
     if hash_bytes(a.read_bytes()) == hash_bytes(b.read_bytes()):
         entry = kp.find_entries(title="Bank", first=True)
         assert entry is not None
-        entry.notes = " "  # normalize strips → still trivial vs empty
+        entry.notes = " "
         kp.save()
-        # notes normalize strips spaces → still trivial vs a's empty notes
     assert hash_bytes(a.read_bytes()) != hash_bytes(b.read_bytes())
 
     file_body = _create_vault_file(client, data_root, a, device_id)
     file_id = file_body["file_id"]
     head1 = file_body["content_hash"]
-
-    assert (
-        client.put(
-            f"/v1/files/{file_id}/kdbx-secret",
-            json={"password": VAULT_PW},
-        ).status_code
-        == 200
-    )
+    _set_secret(client, file_id)
     assert kdbx_secrets.has_password(file_id)
 
     payload_b = b.read_bytes()
@@ -155,7 +229,106 @@ def test_kdbx_trivial_auto_resolves(
     assert open_list.json() == []
 
 
-def test_kdbx_real_conflict_outbox_and_resolve(
+def test_kdbx_auto_merges_add_and_move(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    _make_kdbx(a, title="Bank", password="same")
+    _clone_kdbx(a, b)
+
+    kp = PyKeePass(str(b), password=VAULT_PW)
+    bank = kp.find_entries(title="Bank", first=True)
+    assert bank is not None
+    work = kp.add_group(kp.root_group, "Work")
+    kp.move_entry(bank, work)
+    kp.add_entry(kp.root_group, "PhoneOnly", "u", "phone-secret")
+    kp.save()
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    head_a = file_body["content_hash"]
+    _set_secret(client, file_id)
+
+    payload_b = b.read_bytes()
+    hb = _put_bytes(client, data_root, payload_b)
+    resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    merged_hash = resp.json()["content_hash"]
+    assert merged_hash != head_a
+    assert client.get("/v1/conflicts", params={"state": "open"}).json() == []
+
+    merged_path = blob_path(data_root, DEFAULT_HASH_ALGO, merged_hash)
+    merged = PyKeePass(str(merged_path), password=VAULT_PW)
+    titles = {e.title for e in merged.entries}
+    assert "Bank" in titles and "PhoneOnly" in titles
+    bank_m = merged.find_entries(title="Bank", first=True)
+    assert bank_m is not None
+    assert "Work" in (bank_m.group.name or "")
+
+
+def test_kdbx_auto_merges_lww_field_edit(
+    client: TestClient,
+    data_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    secrets = tmp_path / "kdbx_secrets.json"
+    monkeypatch.setenv("HOMESYNC_KDBX_SECRETS", str(secrets))
+
+    device_id = _register_device(client)
+    a = tmp_path / "base.kdbx"
+    b = tmp_path / "incoming.kdbx"
+    _make_kdbx(a, title="Bank", password="from-a")
+    _clone_kdbx(a, b)
+
+    kp = PyKeePass(str(b), password=VAULT_PW)
+    bank = kp.find_entries(title="Bank", first=True)
+    assert bank is not None
+    bank.password = "from-b"
+    bank.mtime = datetime.now(UTC) + timedelta(hours=2)
+    kp.save()
+
+    file_body = _create_vault_file(client, data_root, a, device_id)
+    file_id = file_body["file_id"]
+    _set_secret(client, file_id)
+
+    payload_b = b.read_bytes()
+    hb = _put_bytes(client, data_root, payload_b)
+    resp = client.post(
+        f"/v1/files/{file_id}/content",
+        json={
+            "content_hash": hb,
+            "hash_algo": DEFAULT_HASH_ALGO,
+            "size_bytes": len(payload_b),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    merged_hash = resp.json()["content_hash"]
+    merged = PyKeePass(
+        str(blob_path(data_root, DEFAULT_HASH_ALGO, merged_hash)),
+        password=VAULT_PW,
+    )
+    bank_m = merged.find_entries(title="Bank", first=True)
+    assert bank_m is not None
+    assert bank_m.password == "from-b"
+
+
+def test_kdbx_deletion_opens_outbox_and_resolve(
     client: TestClient,
     data_root: Path,
     tmp_path: Path,
@@ -170,21 +343,20 @@ def test_kdbx_real_conflict_outbox_and_resolve(
     c = tmp_path / "extra.kdbx"
     ab = tmp_path / "merged.kdbx"
     _make_kdbx(a, title="Bank", password="from-a")
-    _make_kdbx(b, title="Bank", password="from-b")
+    _clone_kdbx(a, b)
+    kp_b = PyKeePass(str(b), password=VAULT_PW)
+    entry = kp_b.find_entries(title="Bank", first=True)
+    assert entry is not None
+    kp_b.delete_entry(entry)
+    kp_b.save()
+
     _make_kdbx(c, title="Bank", password="from-c")
     _make_kdbx(ab, title="Bank", password="merged-ab")
 
     file_body = _create_vault_file(client, data_root, a, device_id)
     file_id = file_body["file_id"]
     head_a = file_body["content_hash"]
-
-    assert (
-        client.put(
-            f"/v1/files/{file_id}/kdbx-secret",
-            json={"password": VAULT_PW},
-        ).status_code
-        == 200
-    )
+    _set_secret(client, file_id)
 
     payload_b = b.read_bytes()
     hb = _put_bytes(client, data_root, payload_b)
@@ -204,10 +376,8 @@ def test_kdbx_real_conflict_outbox_and_resolve(
     assert body["conflict"]["file_id"] == file_id
     hashes = {c["content_hash"] for c in body["conflict"]["candidates"]}
     assert head_a in hashes and hb in hashes
-    # Head unchanged while conflict open.
     assert client.get(f"/v1/files/{file_id}").json()["content_hash"] == head_a
 
-    # Extra candidate while open.
     payload_c = c.read_bytes()
     hc = _put_bytes(client, data_root, payload_c)
     extra = client.post(
