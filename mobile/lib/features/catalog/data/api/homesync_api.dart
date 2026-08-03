@@ -24,21 +24,34 @@ class HomesyncApiException implements Exception {
 /// Thin HTTP client for Homesync `/v1` (catalog, devices, availability, blobs).
 @lazySingleton
 class HomesyncApi {
-  HomesyncApi(this._settings, this._log)
-      : _client = http.Client(),
-        _baseUrl = _normalizeBase(_settings.baseUrl),
+  HomesyncApi(SettingsStore settings, this._log)
+      : _settings = settings,
+        _client = http.Client(),
+        _baseUrl = _normalizeBase(settings.baseUrl),
         timeout = const Duration(seconds: 15);
 
   /// Test / custom HTTP client.
   HomesyncApi.withClient(
-    this._settings,
+    SettingsStore settings,
     this._log,
     http.Client client, {
     this.timeout = const Duration(seconds: 15),
-  })  : _client = client,
-        _baseUrl = _normalizeBase(_settings.baseUrl);
+  })  : _settings = settings,
+        _client = client,
+        _baseUrl = _normalizeBase(settings.baseUrl);
 
-  final SettingsStore _settings;
+  /// Pure-Dart client for the FG task isolate (no SharedPreferences / Drift).
+  HomesyncApi.detached({
+    required String baseUrl,
+    AppLog? log,
+    http.Client? client,
+    this.timeout = const Duration(seconds: 15),
+  })  : _settings = null,
+        _log = log ?? AppLog.silent(),
+        _client = client ?? http.Client(),
+        _baseUrl = _normalizeBase(baseUrl);
+
+  final SettingsStore? _settings;
   final AppLog _log;
   String _baseUrl;
   final http.Client _client;
@@ -47,12 +60,16 @@ class HomesyncApi {
   String get baseUrl => _baseUrl;
 
   void refreshBaseUrlFromSettings() {
-    _baseUrl = _normalizeBase(_settings.baseUrl);
+    final settings = _settings;
+    if (settings == null) return;
+    _baseUrl = _normalizeBase(settings.baseUrl);
   }
 
   set baseUrl(String value) {
     _baseUrl = _normalizeBase(value);
   }
+
+  void close() => _client.close();
 
   static String _normalizeBase(String raw) {
     var s = raw.trim();
@@ -552,6 +569,4 @@ class HomesyncApi {
       jsonDecode(response.body) as Map<String, dynamic>,
     );
   }
-
-  void close() => _client.close();
 }

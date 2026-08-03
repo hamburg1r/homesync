@@ -148,6 +148,49 @@ class DeviceScanner {
     return ScanResult(seen: seen, tracked: tracked, ingested: ingested);
   }
 
+  /// Hash pending/failed tracked files into the durable ingest queue (no upload).
+  Future<int> enqueuePending({IngestProgressCallback? onProgress}) async {
+    final rules =
+        (await repository.listRules()).where((r) => r.enabled).toList();
+    final ruleNames = {for (final r in rules) r.id: r.name};
+    final pending = await repository.listNeedingIngest();
+    if (pending.isEmpty) return 0;
+
+    final alreadyQueued = {
+      for (final item in await ingest.queue.list())
+        if (item.sourcePath != null) item.sourcePath!,
+    };
+
+    var enqueued = 0;
+    final total = pending.length;
+    for (var i = 0; i < total; i++) {
+      final row = pending[i];
+      if (alreadyQueued.contains(row.localPath)) {
+        enqueued += 1;
+        continue;
+      }
+      try {
+        final ruleName = ruleNames[row.ruleId] ?? 'misc';
+        await ingest.enqueueFile(
+          File(row.localPath),
+          title: row.title,
+          sourceKind: row.sourceKind,
+          relativePath:
+              'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
+          index: i + 1,
+          total: total,
+          onProgress: onProgress,
+        );
+        alreadyQueued.add(row.localPath);
+        enqueued += 1;
+      } catch (e) {
+        log.warn('tracking', 'enqueue failed ${row.localPath}: $e');
+        await repository.markFailed(row.localPath);
+      }
+    }
+    return enqueued;
+  }
+
   /// Upload pending/failed tracked files (and leave durable queue flush to caller).
   Future<int> ingestPending({IngestProgressCallback? onProgress}) async {
     final rules =

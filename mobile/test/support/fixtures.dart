@@ -273,6 +273,8 @@ class TestCatalogHarness {
     final backgroundIngest = BackgroundIngestRunner(
       scanner: scanner,
       ingest: ingestService,
+      settings: settings,
+      identity: identity,
       log: log,
     );
     return TestCatalogHarness(

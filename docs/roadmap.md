@@ -197,3 +197,4 @@ Record important choices here as they happen.
 | 2026-08-03 | Ingest: BLAKE3 on isolate; throttle progress; scoped rebuilds | Per-chunk UI rebuilds + main-isolate hash caused frame skips |
 | 2026-08-03 | Background ingest + Android `dataSync` FG service | Refresh must not wait for uploads; survive app background |
 | 2026-08-03 | Ingest HTTP runs in FG task isolate (not UI isolate) | Home paused UI isolate and aborted sockets mid-upload |
+| 2026-08-03 | FG task: HTTP-only jobs; main owns Drift/queue | Dual-isolate DI/Drift caused `flush failed` |

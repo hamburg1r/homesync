@@ -121,8 +121,8 @@ class IngestService {
     }
   }
 
-  /// Stream-hash + upload one file without loading it fully into RAM.
-  Future<CatalogFile> ingestFile(
+  /// Hash + enqueue only (no upload). Used before FG task-isolate HTTP.
+  Future<IngestQueueItem> enqueueFile(
     File source, {
     String? title,
     String? mimeType,
@@ -164,6 +164,30 @@ class IngestService {
       sourcePath: source.path,
     );
     await queue.enqueue(item);
+    return item;
+  }
+
+  /// Stream-hash + upload one file without loading it fully into RAM.
+  Future<CatalogFile> ingestFile(
+    File source, {
+    String? title,
+    String? mimeType,
+    String sourceKind = 'misc',
+    String? relativePath,
+    int index = 1,
+    int total = 1,
+    IngestProgressCallback? onProgress,
+  }) async {
+    final item = await enqueueFile(
+      source,
+      title: title,
+      mimeType: mimeType,
+      sourceKind: sourceKind,
+      relativePath: relativePath,
+      index: index,
+      total: total,
+      onProgress: onProgress,
+    );
 
     try {
       final file = await _flushItem(
@@ -178,6 +202,29 @@ class IngestService {
       log.warn('ingest', 'queued for retry after failure: $e');
       rethrow;
     }
+  }
+
+  /// Apply PC responses after HTTP ran in another isolate (no second upload).
+  Future<CatalogFile> commitRemoteIngest({
+    required IngestQueueItem item,
+    required CatalogFile created,
+    required AvailabilityInfo availability,
+  }) async {
+    await repository.upsertFile(created);
+    await repository.upsertAvailability(
+      fileId: created.fileId,
+      deviceId: availability.deviceId,
+      mode: AvailabilityMode.parse(availability.mode),
+      updatedAt: availability.updatedAt,
+    );
+    await queue.remove(item.id);
+    final refreshed = await repository.getFile(created.fileId);
+    final onDevice = await blobs.has(item.hashAlgo, item.contentHash) ||
+        (item.sourcePath != null && await File(item.sourcePath!).exists());
+    return (refreshed ?? created).copyWith(
+      availabilityMode: AvailabilityMode.pinned,
+      hasLocalBytes: onDevice,
+    );
   }
 
   /// Flush any durable queue items (call on reconnect / catalog refresh).
