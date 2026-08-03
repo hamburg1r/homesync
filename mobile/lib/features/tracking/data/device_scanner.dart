@@ -232,7 +232,7 @@ class DeviceScanner {
         path: path,
         sizeBytes: size,
         mtimeMs: mtimeMs,
-        matched: TrackingRuleMatch(rule: rule),
+        matched: TrackingRuleMatch(rule: rule, contributing: [rule]),
       );
     }
 
@@ -285,6 +285,7 @@ class DeviceScanner {
     final rules =
         (await repository.listRules()).where((r) => r.enabled).toList();
     final byId = indexTrackingRules(rules);
+    final ctx = _MatchContext.fromForest(rules);
     final pending = await repository.listNeedingIngest();
     if (pending.isEmpty) return 0;
 
@@ -312,13 +313,19 @@ class DeviceScanner {
         continue;
       }
       try {
-        final meta = resolveTrackingIngestMeta(byId, row);
+        final match = _matchRule(
+          path: row.localPath,
+          topLevelRegex: ctx.topLevelRegex,
+          folderRules: ctx.folderRules,
+          fileRulePaths: ctx.fileRulePaths,
+        );
+        final meta = resolveTrackingIngestMeta(byId, row, match: match);
         final source = File(row.localPath);
         final reuseHash = await _canReuseContentHash(row, source);
         final item = await ingest.enqueueFile(
           source,
           title: row.title,
-          sourceKind: row.sourceKind,
+          sourceKind: match?.sourceKindOverride ?? row.sourceKind,
           relativePath: meta.relativePath,
           replaceFileId: row.fileId,
           knownContentHash: reuseHash ? row.contentHash : null,
@@ -374,6 +381,7 @@ class DeviceScanner {
     final rules =
         (await repository.listRules()).where((r) => r.enabled).toList();
     final byId = indexTrackingRules(rules);
+    final ctx = _MatchContext.fromForest(rules);
     final pending = await repository.listNeedingIngest();
     if (pending.isEmpty) return 0;
 
@@ -382,13 +390,19 @@ class DeviceScanner {
     for (var i = 0; i < total; i++) {
       final row = pending[i];
       try {
-        final meta = resolveTrackingIngestMeta(byId, row);
+        final match = _matchRule(
+          path: row.localPath,
+          topLevelRegex: ctx.topLevelRegex,
+          folderRules: ctx.folderRules,
+          fileRulePaths: ctx.fileRulePaths,
+        );
+        final meta = resolveTrackingIngestMeta(byId, row, match: match);
         final source = File(row.localPath);
         final reuseHash = await _canReuseContentHash(row, source);
         final file = await ingest.ingestFile(
           source,
           title: row.title,
-          sourceKind: row.sourceKind,
+          sourceKind: match?.sourceKindOverride ?? row.sourceKind,
           relativePath: meta.relativePath,
           replaceFileId: row.fileId,
           previousContentHash: row.contentHash,
@@ -446,8 +460,16 @@ class DeviceScanner {
     required Map<String, TrackingRule> fileRulePaths,
   }) {
     final norm = p.normalize(path);
+    final contributing = <TrackingRule>[];
+    TrackingRule? primary;
+    TrackingRule? folderParent;
+    String? folderRoot;
+
     final fileHit = fileRulePaths[norm];
-    if (fileHit != null) return TrackingRuleMatch(rule: fileHit);
+    if (fileHit != null) {
+      contributing.add(fileHit);
+      primary = fileHit;
+    }
 
     for (final folder in folderRules) {
       final root = p.normalize(folder.patternOrUri);
@@ -455,28 +477,46 @@ class DeviceScanner {
       final enabledChildren =
           folder.children.where((c) => c.enabled).toList(growable: false);
       if (enabledChildren.isEmpty) {
-        return TrackingRuleMatch(rule: folder, folderRoot: root);
+        contributing.add(folder);
+        if (primary == null) {
+          primary = folder;
+          folderRoot = root;
+        }
+        continue;
       }
       final rel = _relativeUnderRoot(norm, root);
+      TrackingRule? childHit;
       for (final child in enabledChildren) {
         final pattern = TrackingPattern.compile(child.patternOrUri);
         if (pattern.matchesPath(rel) || pattern.matchesPath(norm)) {
-          return TrackingRuleMatch(
-            rule: child,
-            folderParent: folder,
-            folderRoot: root,
-          );
+          childHit = child;
+          break;
         }
       }
-      // Under folder but no include child matched → not tracked by this folder.
+      if (childHit == null) continue;
+      contributing.add(folder);
+      contributing.add(childHit);
+      if (primary == null) {
+        primary = childHit;
+        folderParent = folder;
+        folderRoot = root;
+      }
     }
 
     for (final entry in topLevelRegex) {
       if (entry.pattern.matchesPath(norm)) {
-        return TrackingRuleMatch(rule: entry.rule);
+        contributing.add(entry.rule);
+        primary ??= entry.rule;
       }
     }
-    return null;
+
+    if (primary == null) return null;
+    return TrackingRuleMatch(
+      rule: primary,
+      folderParent: folderParent,
+      folderRoot: folderRoot,
+      contributing: List.unmodifiable(contributing),
+    );
   }
 
   String _relativeUnderRoot(String path, String root) {
@@ -579,6 +619,152 @@ class DeviceScanner {
         norm.startsWith('$base${Platform.pathSeparator}') ||
         norm.startsWith('$base/');
   }
+
+  /// After editing a rule's tags/source_kind, push updates for synced matches.
+  ///
+  /// Tags become `union(existing − oldRuleTags, all matching rules' tags)`.
+  /// Source kind uses most-specific override among matches (else path heuristic).
+  Future<RulePropagateResult> propagateRuleEdit({
+    required TrackingRule before,
+    required TrackingRule after,
+  }) async {
+    final forest =
+        (await repository.listRules()).where((r) => r.enabled).toList();
+    final ctx = _MatchContext.fromForest(forest);
+    final tracked = await repository.listTracked();
+    final removedTags = before.tags.toSet().difference(after.tags.toSet());
+    var tagsUpdated = 0;
+    var sourceKindUpdated = 0;
+
+    for (final row in tracked) {
+      final match = _matchRule(
+        path: row.localPath,
+        topLevelRegex: ctx.topLevelRegex,
+        folderRules: ctx.folderRules,
+        fileRulePaths: ctx.fileRulePaths,
+      );
+      if (match == null) continue;
+      final touchesEdited = match.contributing.any((r) => r.id == after.id) ||
+          match.rule.id == after.id ||
+          (after.parentId != null && match.folderParent?.id == after.parentId);
+      // Also refresh files still bound to this rule id (or its parent folder).
+      final bound =
+          row.ruleId == after.id || row.ruleId == before.id || touchesEdited;
+      if (!bound && !touchesEdited) continue;
+
+      final kind =
+          match.sourceKindOverride ?? sourceKindFromPath(row.localPath);
+      final tags = match.effectiveTags;
+      final existing = row.fileId == null
+          ? null
+          : await ingest.repository.getFile(row.fileId!);
+      final existingTags = existing?.tags ?? const <String>[];
+      final nextTags = <String>{
+        ...existingTags.where((t) => !removedTags.contains(t)),
+        ...tags,
+      }.toList()
+        ..sort();
+
+      if (row.sourceKind != kind) {
+        await repository.upsertLocalFile(
+          LocalTrackedFile(
+            localPath: row.localPath,
+            ruleId: match.rule.id,
+            fileId: row.fileId,
+            contentHash: row.contentHash,
+            title: row.title,
+            sizeBytes: row.sizeBytes,
+            mtimeMs: row.mtimeMs,
+            mimeType: row.mimeType,
+            sourceKind: kind,
+            seenAt: row.seenAt,
+            ingestStatus: row.ingestStatus,
+          ),
+        );
+      }
+
+      final fileId = row.fileId;
+      if (fileId == null || !row.isSynced) continue;
+
+      if (!_listEqualsSorted(existingTags, nextTags)) {
+        try {
+          final updated =
+              await ingest.api.putFileTags(fileId: fileId, tags: nextTags);
+          await ingest.repository.upsertFile(updated);
+          tagsUpdated += 1;
+        } catch (e) {
+          log.warn('tracking', 'tag propagate failed $fileId: $e');
+        }
+      }
+
+      if (before.sourceKind != after.sourceKind || row.sourceKind != kind) {
+        try {
+          final base = existing?.updatedAt;
+          final updated = await ingest.api.patchFile(
+            fileId,
+            sourceKind: kind,
+            baseUpdatedAt: base,
+          );
+          await ingest.repository.upsertFile(updated);
+          await ingest.repository.setLocalSourceKind(fileId, kind);
+          sourceKindUpdated += 1;
+        } catch (e) {
+          log.warn('tracking', 'source_kind propagate failed $fileId: $e');
+        }
+      }
+    }
+
+    return RulePropagateResult(
+      tagsUpdated: tagsUpdated,
+      sourceKindUpdated: sourceKindUpdated,
+    );
+  }
+}
+
+class _MatchContext {
+  _MatchContext({
+    required this.topLevelRegex,
+    required this.folderRules,
+    required this.fileRulePaths,
+  });
+
+  final List<({TrackingRule rule, TrackingPattern pattern})> topLevelRegex;
+  final List<TrackingRule> folderRules;
+  final Map<String, TrackingRule> fileRulePaths;
+
+  factory _MatchContext.fromForest(List<TrackingRule> rules) {
+    return _MatchContext(
+      topLevelRegex: rules
+          .where((r) => r.kind == TrackingRuleKind.regex)
+          .map((r) => (rule: r, pattern: TrackingPattern.compile(r.patternOrUri)))
+          .toList(),
+      folderRules: rules.where((r) => r.kind == TrackingRuleKind.folder).toList(),
+      fileRulePaths: {
+        for (final r in rules.where((r) => r.kind == TrackingRuleKind.file))
+          p.normalize(r.patternOrUri): r,
+      },
+    );
+  }
+}
+
+bool _listEqualsSorted(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  final aa = [...a]..sort();
+  final bb = [...b]..sort();
+  for (var i = 0; i < aa.length; i++) {
+    if (aa[i] != bb[i]) return false;
+  }
+  return true;
+}
+
+class RulePropagateResult {
+  const RulePropagateResult({
+    required this.tagsUpdated,
+    required this.sourceKindUpdated,
+  });
+
+  final int tagsUpdated;
+  final int sourceKindUpdated;
 }
 
 class ScanResult {

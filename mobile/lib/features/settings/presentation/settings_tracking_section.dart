@@ -8,6 +8,7 @@ class SettingsTrackingSection extends StatelessWidget {
     required this.loading,
     required this.onToggleRule,
     required this.onDeleteRule,
+    required this.onEditRule,
     required this.onAddRegex,
     required this.onAddFolder,
     required this.onAddFile,
@@ -18,6 +19,7 @@ class SettingsTrackingSection extends StatelessWidget {
   final bool loading;
   final Future<void> Function(TrackingRule rule, bool enabled) onToggleRule;
   final Future<void> Function(TrackingRule rule) onDeleteRule;
+  final Future<void> Function(TrackingRule rule) onEditRule;
   final VoidCallback onAddRegex;
   final VoidCallback onAddFolder;
   final VoidCallback onAddFile;
@@ -34,7 +36,8 @@ class SettingsTrackingSection extends StatelessWidget {
           'Empty = no automatic upload. Regex matches filenames '
           '(e.g. *.pdf). Folder rules ingest every file in that tree; '
           'optional include-regex children filter within the folder. '
-          'File rules upload one chosen path. Tags apply on ingest.',
+          'File rules upload one chosen path. Edit tags or source_kind '
+          'to re-sync matching files; overlapping rules union tags.',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 12),
@@ -50,6 +53,7 @@ class SettingsTrackingSection extends StatelessWidget {
                 rule: rule,
                 onToggleRule: onToggleRule,
                 onDeleteRule: onDeleteRule,
+                onEditRule: onEditRule,
                 onAddChildRegex: onAddChildRegex,
               )),
         const SizedBox(height: 8),
@@ -84,6 +88,7 @@ class _RuleTile extends StatelessWidget {
     required this.rule,
     required this.onToggleRule,
     required this.onDeleteRule,
+    required this.onEditRule,
     required this.onAddChildRegex,
     this.indent = 0,
   });
@@ -91,6 +96,7 @@ class _RuleTile extends StatelessWidget {
   final TrackingRule rule;
   final Future<void> Function(TrackingRule rule, bool enabled) onToggleRule;
   final Future<void> Function(TrackingRule rule) onDeleteRule;
+  final Future<void> Function(TrackingRule rule) onEditRule;
   final Future<void> Function(TrackingRule folder) onAddChildRegex;
   final double indent;
 
@@ -148,6 +154,11 @@ class _RuleTile extends StatelessWidget {
                   onChanged: (v) => onToggleRule(rule, v),
                 ),
                 IconButton(
+                  tooltip: 'Edit',
+                  onPressed: () => onEditRule(rule),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
                   tooltip: 'Delete',
                   onPressed: () => onDeleteRule(rule),
                   icon: const Icon(Icons.delete_outline),
@@ -161,6 +172,7 @@ class _RuleTile extends StatelessWidget {
                 rule: child,
                 onToggleRule: onToggleRule,
                 onDeleteRule: onDeleteRule,
+                onEditRule: onEditRule,
                 onAddChildRegex: onAddChildRegex,
                 indent: 16,
               ),

@@ -161,6 +161,7 @@ def patch_file(
     *,
     title: str | None = None,
     notes: str | None = None,
+    source_kind: str | None = None,
     updated_at: str | None = None,
     base_updated_at: str | None = None,
 ) -> File:
@@ -175,6 +176,30 @@ def patch_file(
     if notes is not None and notes != row.notes:
         row.notes = notes
         dirty = True
+
+    if source_kind is not None:
+        kind = source_kind.strip().lower()
+        if kind not in _ALLOWED_SOURCE_KINDS:
+            raise IngestValidationError(
+                f"source_kind must be one of: {', '.join(sorted(_ALLOWED_SOURCE_KINDS))}"
+            )
+        paths = list(
+            session.scalars(
+                select(FilePath).where(
+                    FilePath.file_id == file_id,
+                    FilePath.is_current.is_(True),
+                )
+            ).all()
+        )
+        if not paths:
+            # Fall back to any path row for this file.
+            paths = list(
+                session.scalars(select(FilePath).where(FilePath.file_id == file_id)).all()
+            )
+        for path_row in paths:
+            if path_row.source_kind != kind:
+                path_row.source_kind = kind
+                dirty = True
 
     if dirty or updated_at is not None:
         # LWW: reject older client clocks when they send updated_at.

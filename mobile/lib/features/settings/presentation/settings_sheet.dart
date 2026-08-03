@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/settings/presentation/add_tracking_rule_dialog.dart';
+import 'package:homesync_mobile/features/settings/presentation/edit_tracking_rule_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/folder_name_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/reclaim_device_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_appearance_section.dart';
@@ -11,6 +12,7 @@ import 'package:homesync_mobile/features/settings/presentation/settings_server_s
 import 'package:homesync_mobile/features/settings/presentation/settings_sync_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_tracking_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/tracking_rule_draft.dart';
+import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_pattern.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -20,6 +22,7 @@ class SettingsSheet extends StatefulWidget {
     super.key,
     required this.settings,
     required this.tracking,
+    required this.scanner,
     this.onRulesChanged,
     this.currentDeviceId,
     this.onListDevices,
@@ -29,6 +32,7 @@ class SettingsSheet extends StatefulWidget {
 
   final SettingsStore settings;
   final TrackingRepository tracking;
+  final DeviceScanner scanner;
   final VoidCallback? onRulesChanged;
   final String? currentDeviceId;
   final Future<List<DeviceInfo>> Function()? onListDevices;
@@ -184,6 +188,50 @@ class _SettingsSheetState extends State<SettingsSheet> {
     }
   }
 
+  Future<void> _editRule(TrackingRule rule) async {
+    final draft = await showDialog<TrackingRuleDraft>(
+      context: context,
+      builder: (context) => EditTrackingRuleDialog(rule: rule),
+    );
+    if (draft == null) return;
+    try {
+      if (rule.kind == TrackingRuleKind.regex) {
+        TrackingPattern.compile(draft.patternOrUri);
+      }
+      final updated = rule.copyWith(
+        name: draft.name,
+        patternOrUri: draft.patternOrUri.trim().isEmpty
+            ? rule.patternOrUri
+            : draft.patternOrUri.trim(),
+        tags: draft.tags,
+        sourceKind: draft.sourceKind,
+        clearSourceKind: draft.sourceKind == null,
+      );
+      await widget.tracking.updateRule(updated);
+      final result = await widget.scanner.propagateRuleEdit(
+        before: rule,
+        after: updated,
+      );
+      widget.onRulesChanged?.call();
+      await _reloadRules();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Updated rule'
+            '${result.tagsUpdated > 0 ? '; tags synced on ${result.tagsUpdated}' : ''}'
+            '${result.sourceKindUpdated > 0 ? '; source_kind synced on ${result.sourceKindUpdated}' : ''}',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not update rule: $e')),
+      );
+    }
+  }
+
   Future<void> _deleteRule(TrackingRule rule) async {
     await widget.tracking.deleteRule(rule.id);
     widget.onRulesChanged?.call();
@@ -323,6 +371,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 loading: _loadingRules,
                 onToggleRule: _toggleRule,
                 onDeleteRule: _deleteRule,
+                onEditRule: _editRule,
                 onAddRegex: _addRegexRule,
                 onAddFolder: _addFolderRule,
                 onAddFile: _addFileRule,

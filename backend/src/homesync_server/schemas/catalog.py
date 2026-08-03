@@ -50,6 +50,8 @@ class FileOut(BaseModel):
 class FilePatchIn(BaseModel):
     title: str | None = None
     notes: str | None = None
+    # Updates current file_paths.source_kind (provenance) when set.
+    source_kind: str | None = None
     updated_at: str | None = None
     base_updated_at: str | None = None
 

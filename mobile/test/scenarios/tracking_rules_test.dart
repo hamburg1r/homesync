@@ -393,6 +393,154 @@ void main() {
       expect(untracked.any((f) => f.title == 'b.txt'), isTrue);
     });
 
+    test('two matching rules union tags; edit propagates tags and source_kind',
+        () async {
+      final tagPuts = <List<String>>[];
+      final patches = <Map<String, dynamic>>[];
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "multi-1",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/tags')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            final tags =
+                (body['tags'] as List<dynamic>).map((e) => '$e').toList()
+                  ..sort();
+            tagPuts.add(tags);
+            return http.Response(
+              jsonEncode({
+                'file_id': 'multi-1',
+                'content_hash':
+                    '448bd8dd9624154a690f8e84dc52d6f633ba7cd545c4d3c9b4e0f6a2f6fa71f4',
+                'hash_algo': 'blake3',
+                'mime_type': null,
+                'size_bytes': 1,
+                'title': 'shot.jpg',
+                'notes': null,
+                'taken_at': null,
+                'created_at': '2026-08-03T00:00:00Z',
+                'updated_at': '2026-08-03T00:00:01.000000Z',
+                'deleted_at': null,
+                'tags': tags,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PATCH' &&
+              request.url.path.contains('/files/') &&
+              !request.url.path.contains('/blob-uploads/')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            patches.add(body);
+            return http.Response(
+              jsonEncode({
+                'file_id': 'multi-1',
+                'content_hash':
+                    '448bd8dd9624154a690f8e84dc52d6f633ba7cd545c4d3c9b4e0f6a2f6fa71f4',
+                'hash_algo': 'blake3',
+                'mime_type': null,
+                'size_bytes': 1,
+                'title': 'shot.jpg',
+                'notes': null,
+                'taken_at': null,
+                'created_at': '2026-08-03T00:00:00Z',
+                'updated_at': '2026-08-03T00:00:02.000000Z',
+                'deleted_at': null,
+                'tags': ['album', 'camera'],
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'multi-1', mode: 'pinned');
+          }
+          if (request.method == 'GET' &&
+              request.url.path.contains('/catalog/delta')) {
+            return http.Response(
+              '{"next_cursor":"","files":[],"tags":[],"file_tags":[],"paths":[],"availability":[]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response(
+            'unexpected ${request.method} ${request.url}',
+            500,
+          );
+        }),
+      );
+
+      final folder = Directory('${harness.scanRoot.path}/DCIM')
+        ..createSync(recursive: true);
+      await File('${folder.path}/shot.jpg').writeAsBytes(Uint8List.fromList([7]));
+
+      final folderRule = await harness.tracking.addRule(
+        name: 'camera',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: folder.path,
+        tags: const ['album'],
+      );
+      await harness.tracking.addRule(
+        name: 'jpgs',
+        kind: TrackingRuleKind.regex,
+        patternOrUri: '*.jpg',
+        tags: const ['camera'],
+      );
+
+      final result = await harness.scanner.scanAndIngest();
+      expect(result.tracked, 1);
+      expect(result.ingested, 1);
+      expect(tagPuts, isNotEmpty);
+      expect(tagPuts.first, ['album', 'camera']);
+
+      final edited = folderRule.copyWith(
+        tags: const ['album', 'vacation'],
+        sourceKind: 'camera',
+      );
+      await harness.tracking.updateRule(edited);
+      final prop = await harness.scanner.propagateRuleEdit(
+        before: folderRule,
+        after: edited,
+      );
+      expect(prop.tagsUpdated, greaterThanOrEqualTo(1));
+      expect(prop.sourceKindUpdated, greaterThanOrEqualTo(1));
+      expect(
+        tagPuts.last,
+        containsAll(['album', 'camera', 'vacation']),
+      );
+      expect(patches.any((p) => p['source_kind'] == 'camera'), isTrue);
+    });
+
     test('file rule ingests only the selected path', () async {
       var creates = 0;
       harness = await TestCatalogHarness.open(

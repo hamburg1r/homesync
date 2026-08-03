@@ -591,6 +591,13 @@ class CatalogRepository {
     return kind;
   }
 
+  /// Update mirrored provenance after ``PATCH /files/{id}`` source_kind.
+  Future<void> setLocalSourceKind(String fileId, String sourceKind) async {
+    final kind = sourceKind.trim().toLowerCase();
+    await (_db.update(_db.catalogPaths)..where((t) => t.fileId.equals(fileId)))
+        .write(CatalogPathsCompanion(sourceKind: Value(kind)));
+  }
+
   Future<void> _deleteBlobIfUnreferenced({
     required String algo,
     required String contentHash,

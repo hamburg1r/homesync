@@ -12,6 +12,7 @@ import 'package:homesync_mobile/features/catalog/presentation/kdbx_conflicts_she
 import 'package:homesync_mobile/features/catalog/presentation/pin_destination_dialog.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sheet.dart';
+import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
 
 class CatalogPage extends StatefulWidget {
@@ -51,6 +52,7 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
       builder: (context) => SettingsSheet(
         settings: widget.settings,
         tracking: getIt<TrackingRepository>(),
+        scanner: getIt<DeviceScanner>(),
         onRulesChanged: () => cubit.onRulesChanged(),
         currentDeviceId: cubit.currentDeviceId,
         onListDevices: cubit.listServerDevices,

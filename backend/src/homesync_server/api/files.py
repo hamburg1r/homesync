@@ -106,11 +106,14 @@ def patch_file(
             file_id,
             title=body.title,
             notes=body.notes,
+            source_kind=body.source_kind,
             updated_at=body.updated_at,
             base_updated_at=body.base_updated_at,
         )
     except catalog_svc.NotFoundError as exc:
         raise HTTPException(status_code=404, detail="file not found") from exc
+    except catalog_svc.IngestValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except catalog_svc.CatalogConflictError as exc:
         raise HTTPException(
             status_code=409,

@@ -825,6 +825,52 @@ class HomesyncApi {
     );
   }
 
+  /// Patch catalog metadata (title/notes/source_kind).
+  Future<CatalogFile> patchFile(
+    String fileId, {
+    String? title,
+    String? notes,
+    String? sourceKind,
+    String? baseUpdatedAt,
+  }) async {
+    refreshBaseUrlFromSettings();
+    final body = <String, dynamic>{
+      'title': ?title,
+      'notes': ?notes,
+      'source_kind': ?sourceKind,
+      'base_updated_at': ?baseUpdatedAt,
+    };
+    final response = await _send(
+      'PATCH /v1/files/$fileId',
+      _client.patch(
+        _uri('/v1/files/$fileId'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ),
+    );
+    if (response.statusCode == 404) {
+      throw HomesyncApiException('file not found', statusCode: 404);
+    }
+    if (response.statusCode == 400) {
+      throw HomesyncApiException(
+        'invalid file patch',
+        statusCode: 400,
+      );
+    }
+    if (response.statusCode == 409) {
+      throw HomesyncApiException('catalog conflict', statusCode: 409);
+    }
+    if (response.statusCode != 200) {
+      throw HomesyncApiException(
+        'file patch failed',
+        statusCode: response.statusCode,
+      );
+    }
+    return CatalogFile.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   /// Replace all tags on a file (server creates missing tag names).
   Future<CatalogFile> putFileTags({
     required String fileId,

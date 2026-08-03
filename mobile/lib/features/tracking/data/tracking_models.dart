@@ -104,6 +104,7 @@ class TrackingRuleMatch {
     required this.rule,
     this.folderParent,
     this.folderRoot,
+    this.contributing = const [],
   });
 
   /// Most specific rule (child include-regex, or the top-level rule).
@@ -112,20 +113,49 @@ class TrackingRuleMatch {
   final TrackingRule? folderParent;
   /// Absolute folder root when matched under a folder rule.
   final String? folderRoot;
+  /// All rules that hit this path (for tag union / source_kind precedence).
+  final List<TrackingRule> contributing;
 
   String get displayName => folderParent?.name ?? rule.name;
 
+  List<TrackingRule> get _tagSources {
+    if (contributing.isNotEmpty) return contributing;
+    return [
+      ?folderParent,
+      rule,
+    ];
+  }
+
   List<String> get effectiveTags {
     final out = <String>{};
-    if (folderParent != null) {
-      out.addAll(folderParent!.tags);
+    for (final r in _tagSources) {
+      out.addAll(r.tags);
     }
-    out.addAll(rule.tags);
     return out.toList()..sort();
   }
 
-  String? get sourceKindOverride =>
-      rule.sourceKind ?? folderParent?.sourceKind;
+  /// Most-specific override: file > folder-child > folder > top-level regex.
+  String? get sourceKindOverride {
+    TrackingRule? best;
+    var bestRank = -1;
+    for (final r in _tagSources) {
+      if (r.sourceKind == null || r.sourceKind!.trim().isEmpty) continue;
+      final rank = _sourceKindRank(r);
+      if (rank > bestRank) {
+        bestRank = rank;
+        best = r;
+      }
+    }
+    return best?.sourceKind;
+  }
+}
+
+int _sourceKindRank(TrackingRule r) {
+  if (r.kind == TrackingRuleKind.file) return 40;
+  if (r.parentId != null) return 30; // folder include-child
+  if (r.kind == TrackingRuleKind.folder) return 20;
+  if (r.kind == TrackingRuleKind.regex) return 10;
+  return 0;
 }
 
 enum IngestStatus { pending, synced, failed, untracked }
@@ -206,8 +236,9 @@ class TrackingIngestMeta {
 /// Build catalog `relative_path` + effective tags for a tracked local row.
 TrackingIngestMeta resolveTrackingIngestMeta(
   Map<String, TrackingRule> byId,
-  LocalTrackedFile row,
-) {
+  LocalTrackedFile row, {
+  TrackingRuleMatch? match,
+}) {
   final ruleId = row.ruleId;
   final rule = ruleId == null ? null : byId[ruleId];
   final parent = rule?.parentId == null ? null : byId[rule!.parentId!];
@@ -215,13 +246,14 @@ TrackingIngestMeta resolveTrackingIngestMeta(
       ? rule
       : (parent?.kind == TrackingRuleKind.folder ? parent : null);
   final displayName = folder?.name ?? rule?.name ?? 'misc';
-  final tags = <String>{
-    ...?folder?.tags,
-    ...?rule?.tags,
-  }.toList()
-    ..sort();
+  final tags = match?.effectiveTags ??
+      (<String>{
+        ...?folder?.tags,
+        ...?rule?.tags,
+      }.toList()
+        ..sort());
 
-  final folderRoot = folder?.patternOrUri;
+  final folderRoot = match?.folderRoot ?? folder?.patternOrUri;
   final relativePath = buildTrackRelativePath(
     ruleName: displayName,
     localPath: row.localPath,

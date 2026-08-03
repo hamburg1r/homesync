@@ -94,6 +94,37 @@ def test_tag_file_and_delta_returns_it(
     assert patched.json()["title"] == "renamed"
     assert patched.json()["notes"] == "via api"
 
+    # Provenance source_kind patch updates current file_paths.
+    sk = client.patch(
+        f"/v1/files/{file_id}",
+        json={
+            "source_kind": "whatsapp",
+            "base_updated_at": patched.json()["updated_at"],
+        },
+    )
+    assert sk.status_code == 200
+    paths = client.get(f"/v1/files/{file_id}/paths")
+    if paths.status_code == 404:
+        # Paths may only appear via delta — check delta paths instead.
+        delta_sk = client.get("/v1/catalog/delta", params={"since": cursor})
+        assert delta_sk.status_code == 200
+        path_rows = [
+            p
+            for p in delta_sk.json().get("paths", [])
+            if p["file_id"] == file_id
+        ]
+        assert path_rows
+        assert any(p["source_kind"] == "whatsapp" for p in path_rows)
+    else:
+        assert paths.status_code == 200
+        assert any(p["source_kind"] == "whatsapp" for p in paths.json())
+
+    bad_sk = client.patch(
+        f"/v1/files/{file_id}",
+        json={"source_kind": "not-a-kind"},
+    )
+    assert bad_sk.status_code == 400
+
     # Conflict when base is stale.
     conflict = client.patch(
         f"/v1/files/{file_id}",
