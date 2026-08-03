@@ -273,23 +273,23 @@ class TrackingRepository {
     return out;
   }
 
-  Future<Map<String, int>> mapScanDirMtimes() async {
+  Future<void> clearScanDirCache({String? underPrefix}) async {
+    if (underPrefix == null || underPrefix.isEmpty) {
+      await _db.delete(_db.scanDirCache).go();
+      return;
+    }
+    final norm = underPrefix;
     final rows = await _db.select(_db.scanDirCache).get();
-    return {for (final row in rows) row.dirPath: row.mtimeMs};
-  }
-
-  Future<void> upsertScanDirMtime(String dirPath, int mtimeMs) async {
-    final norm = dirPath; // caller normalizes
-    await _db.into(_db.scanDirCache).insertOnConflictUpdate(
-          ScanDirCacheCompanion.insert(
-            dirPath: norm,
-            mtimeMs: mtimeMs,
-          ),
-        );
-  }
-
-  Future<void> clearScanDirCache() async {
-    await _db.delete(_db.scanDirCache).go();
+    for (final row in rows) {
+      final path = row.dirPath;
+      if (path == norm ||
+          path.startsWith('$norm/') ||
+          path.startsWith('$norm\\')) {
+        await (_db.delete(_db.scanDirCache)
+              ..where((t) => t.dirPath.equals(path)))
+            .go();
+      }
+    }
   }
 
   /// Pending or failed tracked files waiting for phone→PC ingest.

@@ -119,7 +119,9 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
               return IngestProgressBanner(progress: progress);
             },
           ),
-          onRefresh: () => context.read<CatalogCubit>().refresh(),
+          onRefresh: () => context.read<CatalogCubit>().refresh(
+                forceFullScan: true,
+              ),
           onOpenSettings: () => _openSettings(context),
           onOpenConflicts: () => _openConflicts(context),
           onForceRescan: () => context.read<CatalogCubit>().forceFullRescan(),

@@ -31,10 +31,12 @@ class DeviceScanner {
   /// [onIndexed] runs after the local index is updated and before uploads,
   /// so the UI can show `pending` rows while ingest is in flight.
   /// [onProgress] receives `scanning` updates while walking storage.
-  /// [forceFullScan] ignores directory mtime cache (full re-walk).
+  /// [forceFullScan] clears leftover dir-mtime cache under the walk roots.
+  /// [limitRoots] walks only these directories when set (drawer group pull).
   Future<ScanResult> scanAndIngest({
     bool ingestMatches = true,
     bool forceFullScan = false,
+    List<Directory>? limitRoots,
     IngestProgressCallback? onProgress,
     Future<void> Function()? onIndexed,
   }) async {
@@ -55,7 +57,7 @@ class DeviceScanner {
     );
 
     await _ensurePermission();
-    final roots = await _resolveRoots(rules);
+    final roots = limitRoots ?? await _resolveRoots(rules);
     final now = DateTime.now().toUtc().toIso8601String();
     final topLevelRegex = rules
         .where((r) => r.kind == TrackingRuleKind.regex)
@@ -69,20 +71,25 @@ class DeviceScanner {
       for (final r in fileRules) p.normalize(r.patternOrUri): r,
     };
 
-    // One-shot local index + dir mtimes (avoid per-file SELECTs).
+    // One-shot local index (avoid per-file SELECTs). Always list + recurse +
+    // re-stat: dir mtime does not cover nested dirs or in-place file edits.
     final byPath = await repository.mapLocalFilesByPath();
-    final dirMtimes = forceFullScan
-        ? <String, int>{}
-        : await repository.mapScanDirMtimes();
     if (forceFullScan) {
-      await repository.clearScanDirCache();
+      if (limitRoots != null) {
+        for (final root in limitRoots) {
+          await repository.clearScanDirCache(
+            underPrefix: p.normalize(root.path),
+          );
+        }
+      } else {
+        await repository.clearScanDirCache();
+      }
     }
 
     var seen = 0;
     var tracked = 0;
     final seenPaths = <String>{};
     var lastScanReport = DateTime.fromMillisecondsSinceEpoch(0);
-    var dirsSkipped = 0;
 
     void reportScan() {
       final nowLocal = DateTime.now();
@@ -202,61 +209,9 @@ class DeviceScanner {
       reportScan();
     }
 
-    Future<void> adoptCachedSubtree(String dirNorm) async {
-      final prefixSep = '$dirNorm${Platform.pathSeparator}';
-      final prefixSlash = '$dirNorm/';
-      final keys = byPath.keys.toList(growable: false);
-      for (final path in keys) {
-        if (path != dirNorm &&
-            !path.startsWith(prefixSep) &&
-            !path.startsWith(prefixSlash)) {
-          continue;
-        }
-        // Only adopt file rows (index never stores directories).
-        final prior = byPath[path];
-        if (prior == null) continue;
-        final matched = _matchRule(
-          path: path,
-          topLevelRegex: topLevelRegex,
-          folderRules: folderRules,
-          fileRulePaths: fileRulePaths,
-        );
-        await consider(
-          path: path,
-          sizeBytes: prior.sizeBytes,
-          mtimeMs: prior.mtimeMs ?? 0,
-          matched: matched,
-          existing: prior,
-        );
-      }
-    }
-
     Future<void> walkDir(Directory dir) async {
       final dirNorm = p.normalize(dir.path);
       if (_shouldSkipDir(dirNorm)) return;
-
-      int? mtimeMs;
-      try {
-        mtimeMs = (await dir.stat()).modified.millisecondsSinceEpoch;
-      } on FileSystemException catch (e) {
-        log.warn('tracking', 'skip inaccessible $dirNorm: $e');
-        return;
-      }
-
-      final cached = dirMtimes[dirNorm];
-      final hasIndexedChildren = byPath.keys.any((path) {
-        if (path == dirNorm) return false;
-        return path.startsWith('$dirNorm${Platform.pathSeparator}') ||
-            path.startsWith('$dirNorm/');
-      });
-      if (!forceFullScan &&
-          cached != null &&
-          mtimeMs == cached &&
-          hasIndexedChildren) {
-        dirsSkipped += 1;
-        await adoptCachedSubtree(dirNorm);
-        return;
-      }
 
       final Stream<FileSystemEntity> listing;
       try {
@@ -300,12 +255,10 @@ class DeviceScanner {
         }
       }
 
+      // Always recurse — parent mtime does not reflect nested changes.
       for (final sub in subdirs) {
         await walkDir(sub);
       }
-
-      await repository.upsertScanDirMtime(dirNorm, mtimeMs);
-      dirMtimes[dirNorm] = mtimeMs;
     }
 
     for (final root in roots) {
@@ -319,6 +272,10 @@ class DeviceScanner {
       if (!await file.exists()) continue;
       final path = file.path;
       if (path.contains('/.')) continue;
+      if (limitRoots != null &&
+          !limitRoots.any((r) => _isUnderRoot(path, r.path))) {
+        continue;
+      }
       try {
         final stat = await file.stat();
         await consider(
@@ -356,7 +313,7 @@ class DeviceScanner {
     log.info(
       'tracking',
       'scan seen=$seen tracked=$tracked ingested=$ingested '
-      'dirsSkipped=$dirsSkipped forceFull=$forceFullScan',
+      'forceFull=$forceFullScan',
     );
     return ScanResult(seen: seen, tracked: tracked, ingested: ingested);
   }

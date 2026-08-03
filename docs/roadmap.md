@@ -235,6 +235,6 @@ Record important choices here as they happen.
 | 2026-08-03 | Tracking: folder include-regex children + tags/source_kind; preserve relative_path under folder | Exclude children later; no new tracker kind |
 | 2026-08-03 | Tracking rule edit re-syncs tags + source_kind; multi-rule tag union; PATCH source_kind | Most-specific source_kind when several rules match |
 | 2026-08-03 | Tracking rules default off; disable cancels pending; include-children never track-all | Was whole-folder when children disabled / pending ignored enable |
-| 2026-08-03 | Scan: dir mtime skip + batched local index; AppBar flat/folders + hide-ext view | Force rescan in menu; hide-ext view-only |
+| 2026-08-04 | Pull: ignore if refresh busy; group pull scopes walk to folder rule; always list+recurse | Force full rescan still walks all roots; dir-mtime subtree skip dropped (missed edits) |
 | 2026-08-03 | Manual GC: `POST /v1/gc` + `homesync-gc`; `gc_purges` + delta `purged[]` | Soft-delete until explicit hard-purge; phone Forget for leftover Removed rows |
 | 2026-08-03 | Phone tag edit via PUT `/files/{id}/tags` + chip UI in detail sheet | Display/search already existed; write path was missing; browse-by-tag Later |

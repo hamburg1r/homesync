@@ -861,7 +861,8 @@ void main() {
       expect((await harness.tracking.listTracked()).single.isSynced, isTrue);
     });
 
-    test('second scan skips unchanged dirs via mtime cache', () async {
+    test('second scan finds nested files without re-uploading unchanged',
+        () async {
       var creates = 0;
       harness = await TestCatalogHarness.open(
         MockClient((request) async {
@@ -898,7 +899,10 @@ void main() {
           }
           if (request.method == 'PUT' &&
               request.url.path.contains('/availability/')) {
-            return availabilityOkResponse(fileId: 'mtime-1', mode: 'pinned');
+            return availabilityOkResponse(
+              fileId: 'mtime-$creates',
+              mode: 'pinned',
+            );
           }
           return http.Response('unexpected', 500);
         }),
@@ -918,10 +922,90 @@ void main() {
       final first = await harness.scanner.scanAndIngest();
       expect(first.tracked, 1);
       expect(first.ingested, 1);
+      expect(creates, 1);
 
-      final second = await harness.scanner.scanAndIngest(ingestMatches: false);
-      expect(second.tracked, 1);
-      expect(second.seen, greaterThanOrEqualTo(1));
+      final nested = Directory('${folder.path}/Documents')
+        ..createSync(recursive: true);
+      await File('${nested.path}/two.txt').writeAsString('two');
+
+      final second = await harness.scanner.scanAndIngest();
+      expect(second.tracked, 2);
+      expect(second.ingested, 1);
+      expect(creates, 2);
+    });
+
+    test('limitRoots walks only the scoped folder', () async {
+      var creates = 0;
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) return upload;
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            creates += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "scope-$creates",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "${body['title']}",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00.000000Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(
+              fileId: 'scope-$creates',
+              mode: 'pinned',
+            );
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final wa = Directory('${harness.scanRoot.path}/WhatsApp')
+        ..createSync(recursive: true);
+      final other = Directory('${harness.scanRoot.path}/Other')
+        ..createSync(recursive: true);
+      await File('${wa.path}/a.pdf').writeAsString('wa');
+      await File('${other.path}/b.pdf').writeAsString('other');
+
+      await harness.tracking.addRule(
+        name: 'wa',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: wa.path,
+        enabled: true,
+      );
+      await harness.tracking.addRule(
+        name: 'other',
+        kind: TrackingRuleKind.folder,
+        patternOrUri: other.path,
+        enabled: true,
+      );
+
+      final scoped = await harness.scanner.scanAndIngest(
+        limitRoots: [wa],
+        forceFullScan: true,
+      );
+      expect(scoped.tracked, 1);
+      expect(scoped.ingested, 1);
       expect(creates, 1);
     });
 

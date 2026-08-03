@@ -67,6 +67,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   StreamSubscription<List<TrackingRule>>? _rulesSub;
   List<CatalogFile> _catalogFiles = const [];
   bool _started = false;
+  bool _refreshBusy = false;
   DateTime? _lastIngestProgressEmit;
   IngestFileProgress? _lastIngestProgress;
 
@@ -258,12 +259,32 @@ class CatalogCubit extends Cubit<CatalogState> {
 
   Future<void> forceFullRescan() async {
     await scanner.invalidateDirCache();
-    await refresh(forceFullScan: true);
+    await refresh(forceFullScan: true, scopeToBrowseGroup: false);
   }
 
   Future<void> setDeviceAndSyncedOnly(bool value) async {
     emit(state.copyWith(deviceAndSyncedOnly: value));
     await _emitBrowseList();
+  }
+
+  /// Folder root for the active drawer group (optional nested [treePrefix]).
+  List<Directory>? _browseGroupScanRoots() {
+    if (state.browseMode != BrowseMode.group) return null;
+    TrackingRule? groupRule;
+    for (final r in state.rules) {
+      if (r.id == state.groupRuleId) {
+        groupRule = r;
+        break;
+      }
+    }
+    if (groupRule == null || groupRule.kind != TrackingRuleKind.folder) {
+      return null;
+    }
+    var path = groupRule.patternOrUri;
+    if (state.foldersView && state.treePrefix.isNotEmpty) {
+      path = p.join(path, state.treePrefix);
+    }
+    return [Directory(path)];
   }
 
   /// Throttle progress UI updates so hashing/upload does not rebuild every chunk.
@@ -480,6 +501,28 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<void> refresh({
     bool showSpinnerWhenEmpty = false,
     bool forceFullScan = false,
+    bool scopeToBrowseGroup = true,
+  }) async {
+    if (_refreshBusy) {
+      log.info('catalog', 'refresh ignored — already in progress');
+      return;
+    }
+    _refreshBusy = true;
+    try {
+      await _refreshBody(
+        showSpinnerWhenEmpty: showSpinnerWhenEmpty,
+        forceFullScan: forceFullScan,
+        scopeToBrowseGroup: scopeToBrowseGroup,
+      );
+    } finally {
+      _refreshBusy = false;
+    }
+  }
+
+  Future<void> _refreshBody({
+    required bool showSpinnerWhenEmpty,
+    required bool forceFullScan,
+    required bool scopeToBrowseGroup,
   }) async {
     final showSpinner =
         showSpinnerWhenEmpty && state.files.isEmpty && !state.refreshing;
@@ -528,10 +571,21 @@ class CatalogCubit extends Cubit<CatalogState> {
     );
     if (isClosed) return;
 
+    final limitRoots =
+        scopeToBrowseGroup ? _browseGroupScanRoots() : null;
+    if (limitRoots != null) {
+      log.info(
+        'catalog',
+        'group scan → ${limitRoots.map((d) => d.path).join(", ")} '
+        'force=$forceFullScan',
+      );
+    }
+
     try {
       await scanner.scanAndIngest(
         ingestMatches: false,
         forceFullScan: forceFullScan,
+        limitRoots: limitRoots,
         onProgress: onIngest,
         onIndexed: () => _emitBrowseList(),
       );
