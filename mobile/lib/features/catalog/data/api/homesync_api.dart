@@ -444,17 +444,26 @@ class HomesyncApi {
         );
 
         if (response.statusCode == 409) {
-          final serverOff = int.tryParse(
-            response.headers['upload-offset'] ?? '',
+          final recovered = await _recoverUploadOffset(
+            uploadId: uploadId,
+            contentLength: contentLength,
+            response: response,
+            fallback: offset,
           );
-          if (serverOff != null) {
-            offset = serverOff;
+          if (recovered != null) {
+            if (recovered >= contentLength) {
+              return;
+            }
+            offset = recovered;
             onProgress?.call(offset, contentLength);
             attempt = 0;
             continue;
           }
+          final detail = _responseDetail(response);
           throw HomesyncApiException(
-            'blob upload offset conflict',
+            detail.isEmpty
+                ? 'blob upload conflict'
+                : 'blob upload conflict: $detail',
             statusCode: 409,
           );
         }
@@ -538,6 +547,66 @@ class HomesyncApi {
       _log.warn('api', 'upload status unreachable: $e; keeping offset $fallback');
       return fallback;
     }
+  }
+
+  /// Sync local offset after HTTP 409: header, body, then GET status.
+  ///
+  /// Returns null when the conflict is not an offset mismatch (e.g. hash).
+  Future<int?> _recoverUploadOffset({
+    required String uploadId,
+    required int contentLength,
+    required http.Response response,
+    required int fallback,
+  }) async {
+    final fromHeader = int.tryParse(
+      response.headers['upload-offset'] ?? '',
+    );
+    if (fromHeader != null) {
+      return fromHeader;
+    }
+
+    final detail = _responseDetail(response);
+    final fromBody = RegExp(r'server=(\d+)').firstMatch(detail);
+    if (fromBody != null) {
+      return int.parse(fromBody.group(1)!);
+    }
+
+    // Hash / size conflicts are not resumable via offset alone.
+    final lower = detail.toLowerCase();
+    if (lower.contains('hash mismatch') ||
+        lower.contains('size mismatch') ||
+        lower.contains('blob collision') ||
+        lower.contains('exceed size')) {
+      return null;
+    }
+
+    try {
+      final polled = await _pollUploadOffset(uploadId, contentLength);
+      if (polled != fallback || polled > 0) {
+        _log.warn(
+          'api',
+          '409 without Upload-Offset; resumed via status at $polled',
+        );
+        return polled;
+      }
+    } catch (e) {
+      _log.warn('api', '409 recovery status failed: $e');
+    }
+    return null;
+  }
+
+  static String _responseDetail(http.Response response) {
+    final raw = response.body.trim();
+    if (raw.isEmpty) return '';
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map && decoded['detail'] != null) {
+        return decoded['detail'].toString();
+      }
+    } catch (_) {
+      // plain text body
+    }
+    return raw;
   }
 
   Future<int> _pollUploadOffset(String uploadId, int contentLength) async {

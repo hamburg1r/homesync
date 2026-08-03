@@ -107,60 +107,80 @@ class DeviceScanner {
       if (matched != null) {
         tracked += 1;
         final existing = await repository.getLocalFile(path);
-        final alreadySynced = existing?.isSynced ?? false;
-        if (alreadySynced) {
-          final sizeUnchanged = existing!.sizeBytes == sizeBytes;
-          final mtimeUnchanged =
-              existing.mtimeMs != null && existing.mtimeMs == mtimeMs;
-          if (sizeUnchanged && mtimeUnchanged) {
-            await repository.upsertLocalFile(
-              LocalTrackedFile(
-                localPath: path,
-                ruleId: matched.id,
-                fileId: existing.fileId,
-                contentHash: existing.contentHash,
-                title: title,
-                sizeBytes: sizeBytes,
-                mtimeMs: mtimeMs,
-                mimeType: existing.mimeType,
-                sourceKind: kind,
-                seenAt: now,
-                ingestStatus: IngestStatus.synced,
-              ),
-            );
-          } else {
-            // Bytes may have changed — rehash on ingest; keep fileId binding.
-            await repository.upsertLocalFile(
-              LocalTrackedFile(
-                localPath: path,
-                ruleId: matched.id,
-                fileId: existing.fileId,
-                contentHash: existing.contentHash,
-                title: title,
-                sizeBytes: sizeBytes,
-                mtimeMs: mtimeMs,
-                mimeType: existing.mimeType,
-                sourceKind: kind,
-                seenAt: now,
-                ingestStatus: IngestStatus.pending,
-              ),
-            );
-          }
-        } else {
-          final row = LocalTrackedFile(
-            localPath: path,
-            ruleId: matched.id,
-            fileId: existing?.fileId,
-            contentHash: existing?.contentHash,
-            title: title,
-            sizeBytes: sizeBytes,
-            mtimeMs: mtimeMs,
-            mimeType: existing?.mimeType,
-            sourceKind: kind,
-            seenAt: now,
-            ingestStatus: IngestStatus.pending,
+        final sizeUnchanged =
+            existing != null && existing.sizeBytes == sizeBytes;
+        final mtimeUnchanged =
+            existing?.mtimeMs != null && existing!.mtimeMs == mtimeMs;
+        // Synced rows with a known digest but null mtime (older builds) only
+        // need a backfill — size match is enough to skip rehash.
+        final mtimeOkForSkip = mtimeUnchanged ||
+            (existing != null &&
+                existing.isSynced &&
+                existing.mtimeMs == null &&
+                sizeUnchanged);
+        final metadataUnchanged = sizeUnchanged && mtimeOkForSkip;
+        final hasDigest =
+            existing?.contentHash != null && existing!.contentHash!.isNotEmpty;
+
+        if (existing != null &&
+            existing.isSynced &&
+            metadataUnchanged &&
+            hasDigest) {
+          await repository.upsertLocalFile(
+            LocalTrackedFile(
+              localPath: path,
+              ruleId: matched.id,
+              fileId: existing.fileId,
+              contentHash: existing.contentHash,
+              title: title,
+              sizeBytes: sizeBytes,
+              mtimeMs: mtimeMs,
+              mimeType: existing.mimeType,
+              sourceKind: kind,
+              seenAt: now,
+              ingestStatus: IngestStatus.synced,
+            ),
           );
-          await repository.upsertLocalFile(row);
+        } else if (existing != null && metadataUnchanged && hasDigest) {
+          // Already hashed this on-disk revision — keep digest for upload
+          // retry without blake3 (pending/failed after a large-file abort).
+          final status = existing.ingestStatus == IngestStatus.failed
+              ? IngestStatus.failed
+              : IngestStatus.pending;
+          await repository.upsertLocalFile(
+            LocalTrackedFile(
+              localPath: path,
+              ruleId: matched.id,
+              fileId: existing.fileId,
+              contentHash: existing.contentHash,
+              title: title,
+              sizeBytes: sizeBytes,
+              mtimeMs: mtimeMs,
+              mimeType: existing.mimeType,
+              sourceKind: kind,
+              seenAt: now,
+              ingestStatus: status,
+            ),
+          );
+        } else {
+          // New file or size/mtime changed — (re)hash on ingest; keep binding.
+          // Clear digest when metadata changed so we do not treat the old hash
+          // as valid for the new size/mtime (would skip content replace).
+          await repository.upsertLocalFile(
+            LocalTrackedFile(
+              localPath: path,
+              ruleId: matched.id,
+              fileId: existing?.fileId,
+              contentHash: metadataUnchanged ? existing?.contentHash : null,
+              title: title,
+              sizeBytes: sizeBytes,
+              mtimeMs: mtimeMs,
+              mimeType: existing?.mimeType,
+              sourceKind: kind,
+              seenAt: now,
+              ingestStatus: IngestStatus.pending,
+            ),
+          );
         }
       } else {
         await repository.upsertLocalFile(
@@ -294,6 +314,7 @@ class DeviceScanner {
       try {
         final ruleName = ruleNames[row.ruleId] ?? 'misc';
         final source = File(row.localPath);
+        final reuseHash = await _canReuseContentHash(row, source);
         final item = await ingest.enqueueFile(
           source,
           title: row.title,
@@ -301,10 +322,29 @@ class DeviceScanner {
           relativePath:
               'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
           replaceFileId: row.fileId,
+          knownContentHash: reuseHash ? row.contentHash : null,
           index: i + 1,
           total: total,
           onProgress: onProgress,
         );
+        // Persist digest immediately so a killed upload does not re-blake3.
+        if (row.contentHash != item.contentHash) {
+          await repository.upsertLocalFile(
+            LocalTrackedFile(
+              localPath: row.localPath,
+              ruleId: row.ruleId,
+              fileId: row.fileId,
+              contentHash: item.contentHash,
+              title: row.title,
+              sizeBytes: item.sizeBytes,
+              mtimeMs: (await source.stat()).modified.millisecondsSinceEpoch,
+              mimeType: row.mimeType,
+              sourceKind: row.sourceKind,
+              seenAt: row.seenAt,
+              ingestStatus: IngestStatus.pending,
+            ),
+          );
+        }
         if (row.fileId != null &&
             row.contentHash != null &&
             item.contentHash == row.contentHash) {
@@ -344,6 +384,7 @@ class DeviceScanner {
       try {
         final ruleName = ruleNames[row.ruleId] ?? 'misc';
         final source = File(row.localPath);
+        final reuseHash = await _canReuseContentHash(row, source);
         final file = await ingest.ingestFile(
           source,
           title: row.title,
@@ -352,6 +393,7 @@ class DeviceScanner {
               'track/$ruleName/${row.title ?? p.basename(row.localPath)}',
           replaceFileId: row.fileId,
           previousContentHash: row.contentHash,
+          knownContentHash: reuseHash ? row.contentHash : null,
           index: i + 1,
           total: total,
           onProgress: onProgress,
@@ -385,6 +427,16 @@ class DeviceScanner {
       }
     }
     return ingested;
+  }
+
+  /// True when the local index digest still matches this on-disk revision.
+  Future<bool> _canReuseContentHash(LocalTrackedFile row, File source) async {
+    final digest = row.contentHash;
+    if (digest == null || digest.isEmpty) return false;
+    if (row.mtimeMs == null) return false;
+    final stat = await source.stat();
+    return stat.size == row.sizeBytes &&
+        stat.modified.millisecondsSinceEpoch == row.mtimeMs;
   }
 
   TrackingRule? _matchRule({

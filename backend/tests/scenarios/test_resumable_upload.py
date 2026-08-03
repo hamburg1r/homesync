@@ -46,11 +46,20 @@ def test_resumable_upload_chunks_and_resume(
     assert status.status_code == 200
     assert status.json()["offset"] == mid
 
-    # Wrong offset → 409 with server ack.
+    # Stale/low offset (lost ack / retry) → 204 with current server offset.
+    replay = client.patch(
+        f"/v1/blob-uploads/{upload_id}",
+        content=payload[:10],
+        headers={"Upload-Offset": "0"},
+    )
+    assert replay.status_code == 204
+    assert replay.headers["upload-offset"] == str(mid)
+
+    # Gap ahead of server → 409 with server ack.
     bad = client.patch(
         f"/v1/blob-uploads/{upload_id}",
         content=payload[mid : mid + 10],
-        headers={"Upload-Offset": "0"},
+        headers={"Upload-Offset": str(mid + 50)},
     )
     assert bad.status_code == 409
     assert bad.headers["upload-offset"] == str(mid)

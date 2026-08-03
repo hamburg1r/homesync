@@ -406,5 +406,107 @@ void main() {
       expect(await harness.tracking.listNeedingIngest(), isEmpty);
       expect((await harness.tracking.listTracked()).single.isSynced, isTrue);
     });
+
+    test('failed ingest with unchanged mtime reuses digest (no rehash gate)',
+        () async {
+      var creates = 0;
+      var putBlobs = 0;
+      harness = await TestCatalogHarness.open(
+        MockClient((request) async {
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/devices')) {
+            return deviceOkResponse();
+          }
+          if (request.method == 'GET' &&
+              request.url.path.contains('/catalog/delta')) {
+            return http.Response(
+              '{"next_cursor":"","files":[],"tags":[],"file_tags":[],"paths":[],"availability":[]}',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          final upload = mockBlobUploadResponse(request);
+          if (upload != null) {
+            putBlobs += 1;
+            return upload;
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/files')) {
+            creates += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              '''
+{
+  "file_id": "ghost-1",
+  "content_hash": "${body['content_hash']}",
+  "hash_algo": "blake3",
+  "mime_type": null,
+  "size_bytes": ${body['size_bytes']},
+  "title": "ghost.bin",
+  "notes": null,
+  "taken_at": null,
+  "created_at": "2026-08-01T00:00:00Z",
+  "updated_at": "2026-08-01T00:00:00Z",
+  "deleted_at": null,
+  "tags": []
+}
+''',
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.contains('/availability/')) {
+            return availabilityOkResponse(fileId: 'ghost-1', mode: 'pinned');
+          }
+          return http.Response('unexpected', 500);
+        }),
+      );
+
+      final file = File('${harness.scanRoot.path}/ghost.bin')
+        ..writeAsBytesSync(Uint8List.fromList(List<int>.filled(64, 7)));
+      await harness.tracking.addRule(
+        name: 'iso',
+        kind: TrackingRuleKind.file,
+        patternOrUri: file.path,
+      );
+
+      final first = await harness.scanner.scanAndIngest();
+      expect(first.ingested, 1);
+      expect(creates, 1);
+      final synced = await harness.tracking.getLocalFile(file.path);
+      expect(synced?.isSynced, isTrue);
+      expect(synced?.contentHash, isNotNull);
+      expect(synced?.mtimeMs, isNotNull);
+      final digest = synced!.contentHash!;
+
+      // Simulate upload abort after hash, before the server assigned file_id.
+      await harness.tracking.upsertLocalFile(
+        LocalTrackedFile(
+          localPath: synced.localPath,
+          ruleId: synced.ruleId,
+          fileId: null,
+          contentHash: digest,
+          title: synced.title,
+          sizeBytes: synced.sizeBytes,
+          mtimeMs: synced.mtimeMs,
+          mimeType: synced.mimeType,
+          sourceKind: synced.sourceKind,
+          seenAt: synced.seenAt,
+          ingestStatus: IngestStatus.pending,
+        ),
+      );
+
+      final enqueued = await harness.scanner.enqueuePending();
+      expect(enqueued, 1);
+      final queued = await harness.ingestQueue.list();
+      expect(queued, hasLength(1));
+      expect(queued.single.contentHash, digest);
+      // Rescan must not clear the digest when size/mtime are unchanged.
+      await harness.scanner.scanAndIngest(ingestMatches: false);
+      final again = await harness.tracking.getLocalFile(file.path);
+      expect(again?.contentHash, digest);
+      expect(again?.ingestStatus, IngestStatus.pending);
+    });
   });
 }

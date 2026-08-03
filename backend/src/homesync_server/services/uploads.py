@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -224,7 +225,11 @@ def append_chunk(
     client_offset: int,
     chunk: bytes,
 ) -> UploadSession:
-    """Append ``chunk`` at ``client_offset`` (must match server offset). Ack new offset."""
+    """Append ``chunk`` at ``client_offset`` (must match server offset). Ack new offset.
+
+    Retries with ``client_offset < server`` are treated as already-acked (lost 204)
+    and return the current session without rewriting bytes.
+    """
     session = get_upload(data_root, upload_id)
     if session.complete:
         return session
@@ -234,8 +239,11 @@ def append_chunk(
     if age > PARTIAL_KEEP_SECONDS:
         raise UploadGoneError("upload partial expired; restart upload")
 
-    if client_offset != session.offset:
+    if client_offset > session.offset:
         raise UploadOffsetError(session.offset, client_offset)
+    if client_offset < session.offset:
+        # Client retried a chunk the server already accepted (ack lost / timeout).
+        return session
 
     if not chunk:
         session.last_activity = _now_iso()
@@ -251,21 +259,42 @@ def append_chunk(
 
     udir = upload_dir(data_root, session.algo, session.content_hash)
     partial = _partial_path(udir)
-    with partial.open("ab") as fh:
-        fh.write(chunk)
-        fh.flush()
+    lock_path = udir / "partial.lock"
+    udir.mkdir(parents=True, exist_ok=True)
 
-    session.offset = new_offset
-    session.last_activity = _now_iso()
+    with lock_path.open("a+b") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            # Re-read under lock — another writer may have advanced the partial.
+            session = get_upload(data_root, upload_id)
+            if session.complete:
+                return session
+            if client_offset > session.offset:
+                raise UploadOffsetError(session.offset, client_offset)
+            if client_offset < session.offset:
+                return session
 
-    if session.offset == session.size_bytes:
-        _finalize(data_root, session, partial)
-        session.complete = True
-        _wipe_upload(udir)
-        return session
+            with partial.open("ab") as fh:
+                fh.write(chunk)
+                fh.flush()
 
-    _save_meta(udir, session)
-    return session
+            session.offset = session.offset + len(chunk)
+            session.last_activity = _now_iso()
+
+            if session.offset == session.size_bytes:
+                try:
+                    _finalize(data_root, session, partial)
+                except UploadConflictError:
+                    _wipe_upload(udir)
+                    raise
+                session.complete = True
+                _wipe_upload(udir)
+                return session
+
+            _save_meta(udir, session)
+            return session
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def _finalize(data_root: Path, session: UploadSession, partial: Path) -> None:

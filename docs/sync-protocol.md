@@ -102,7 +102,7 @@ PATCH /v1/blob-uploads/{upload_id}   # append chunk (Upload-Offset)
 1. Client hashes the file (BLAKE3), then `POST /v1/blob-uploads` with `{algo, content_hash, size_bytes}`.
 2. Server returns `upload_id` (`algo:hash`) and current `offset` (0 for new; resume if a partial exists). If the managed CAS object already exists at that hash with matching `size_bytes`, begin returns `complete: true` immediately (path is content-addressed; no full re-hash on begin). Client idle timeout for begin scales with size (not the 15s catalog default).
 3. Client `PATCH`es ~4 MiB chunks with header `Upload-Offset: <acked>`. Response `Upload-Offset` is the new ack (TCP-style).
-4. Offset mismatch → `409` + `Upload-Offset` of the server’s truth; client syncs and continues.
+4. Offset behind server (retry / lost ack) → `204` with current `Upload-Offset`. Gap ahead → `409` + `Upload-Offset`; client syncs and continues.
 5. When `offset == size_bytes`, server verifies hash on the partial, promotes into managed CAS, and sets `X-Upload-Complete: 1`.
 6. Disconnect / stall: client re-`GET`s status (or keeps the last offset if still offline) and continues. Retries network errors for ~30 minutes (30s backoff cap) while the FG service is alive. Partials live under `$data_root/uploads/…` for up to 7 days; per-chunk client timeout is 1 hour. After retries are exhausted the batch stops — opening the app again re-kicks the remaining queue.
 

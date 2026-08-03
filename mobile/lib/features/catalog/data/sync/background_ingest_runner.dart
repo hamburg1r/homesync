@@ -12,6 +12,7 @@ import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
+import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:injectable/injectable.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
@@ -113,6 +114,12 @@ class HomesyncIngestTaskHandler extends TaskHandler {
             'type': 'item_err',
             'id': item.id,
             'message': e.toString(),
+            'content_hash': item.contentHash,
+            'size_bytes': item.sizeBytes,
+            'source_path': item.sourcePath,
+            'replace_file_id': item.replaceFileId,
+            'title': item.title,
+            'source_kind': item.sourceKind,
           });
           break;
         }
@@ -147,6 +154,32 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       throw IngestException('file missing: $sourcePath');
     }
     final display = item.title ?? p.basename(sourcePath);
+
+    // Main already verified mtime/size against a stored digest.
+    if (item.contentHash.isNotEmpty) {
+      FlutterForegroundTask.sendDataToMain({
+        'type': 'progress',
+        'title': display,
+        'index': index,
+        'total': total,
+        'phase': 'hashing',
+        'fraction': 1.0,
+      });
+      return IngestQueueItem(
+        id: item.id,
+        contentHash: item.contentHash,
+        hashAlgo: item.hashAlgo,
+        sizeBytes: await file.length(),
+        mimeType: item.mimeType,
+        title: item.title,
+        sourceKind: item.sourceKind,
+        relativePath: item.relativePath,
+        sourcePath: item.sourcePath,
+        replaceFileId: item.replaceFileId,
+        createdAt: item.createdAt,
+      );
+    }
+
     final hash = await ContentHash.blake3File(
       file,
       onProgress: (done, totalBytes) {
@@ -168,7 +201,7 @@ class HomesyncIngestTaskHandler extends TaskHandler {
         );
       },
     );
-    return IngestQueueItem(
+    final hashed = IngestQueueItem(
       id: item.id,
       contentHash: hash,
       hashAlgo: ContentHash.algo,
@@ -181,6 +214,18 @@ class HomesyncIngestTaskHandler extends TaskHandler {
       replaceFileId: item.replaceFileId,
       createdAt: item.createdAt,
     );
+    // Persist digest before upload so a mid-transfer kill does not re-blake3.
+    FlutterForegroundTask.sendDataToMain({
+      'type': 'item_hashed',
+      'id': hashed.id,
+      'content_hash': hashed.contentHash,
+      'size_bytes': hashed.sizeBytes,
+      'source_path': hashed.sourcePath,
+      'replace_file_id': hashed.replaceFileId,
+      'title': hashed.title,
+      'source_kind': hashed.sourceKind,
+    });
+    return hashed;
   }
 
   Future<({CatalogFile file, AvailabilityInfo availability})> _uploadOne({
@@ -412,6 +457,8 @@ class BackgroundIngestRunner {
           fraction: (map['fraction'] as num?)?.toDouble() ?? 0,
         );
         _onProgress?.call(p);
+      case 'item_hashed':
+        _commitChain = _commitChain.then((_) => _commitItemHashed(map));
       case 'item_ok':
         _commitChain = _commitChain.then((_) => _commitItemOk(map));
       case 'item_conflict':
@@ -425,6 +472,7 @@ class BackgroundIngestRunner {
           'ingest',
           'flush failed for ${map['id']}: ${map['message']}',
         );
+        _commitChain = _commitChain.then((_) => _commitItemHashed(map));
       case 'done':
       case 'error':
         if (map['type'] == 'error') {
@@ -438,6 +486,87 @@ class BackgroundIngestRunner {
             }),
           );
         }
+    }
+  }
+
+  Future<void> _commitItemHashed(Map<String, dynamic> map) async {
+    final path = map['source_path'] as String?;
+    final hash = map['content_hash'] as String?;
+    if (path == null || path.isEmpty || hash == null || hash.isEmpty) {
+      // Prefer job payload when the task only sent an error id.
+      final id = map['id'] as String?;
+      final item = id == null ? null : _jobsById[id];
+      if (item == null ||
+          item.sourcePath == null ||
+          item.contentHash.isEmpty) {
+        return;
+      }
+      await _persistPendingDigest(
+        localPath: item.sourcePath!,
+        contentHash: item.contentHash,
+        sizeBytes: item.sizeBytes,
+        fileId: item.replaceFileId,
+        title: item.title,
+        sourceKind: item.sourceKind,
+      );
+      return;
+    }
+    await _persistPendingDigest(
+      localPath: path,
+      contentHash: hash,
+      sizeBytes: map['size_bytes'] as int? ?? 0,
+      fileId: map['replace_file_id'] as String?,
+      title: map['title'] as String?,
+      sourceKind: map['source_kind'] as String? ?? 'misc',
+    );
+  }
+
+  Future<void> _persistPendingDigest({
+    required String localPath,
+    required String contentHash,
+    required int sizeBytes,
+    String? fileId,
+    String? title,
+    required String sourceKind,
+  }) async {
+    final existing = await scanner.repository.getLocalFile(localPath);
+    final source = File(localPath);
+    final mtimeMs = await source.exists()
+        ? (await source.stat()).modified.millisecondsSinceEpoch
+        : existing?.mtimeMs;
+    await scanner.repository.upsertLocalFile(
+      LocalTrackedFile(
+        localPath: localPath,
+        ruleId: existing?.ruleId,
+        fileId: fileId ?? existing?.fileId,
+        contentHash: contentHash,
+        title: title ?? existing?.title,
+        sizeBytes: sizeBytes > 0 ? sizeBytes : (existing?.sizeBytes ?? 0),
+        mtimeMs: mtimeMs,
+        mimeType: existing?.mimeType,
+        sourceKind: existing?.sourceKind ?? sourceKind,
+        seenAt: existing?.seenAt ?? DateTime.now().toUtc().toIso8601String(),
+        ingestStatus: IngestStatus.pending,
+      ),
+    );
+    // Keep in-memory job map in sync for a later item_ok/err.
+    for (final entry in _jobsById.entries) {
+      final job = entry.value;
+      if (job.sourcePath == localPath) {
+        _jobsById[entry.key] = IngestQueueItem(
+          id: job.id,
+          contentHash: contentHash,
+          hashAlgo: job.hashAlgo,
+          sizeBytes: sizeBytes > 0 ? sizeBytes : job.sizeBytes,
+          mimeType: job.mimeType,
+          title: job.title,
+          sourceKind: job.sourceKind,
+          relativePath: job.relativePath,
+          sourcePath: job.sourcePath,
+          replaceFileId: job.replaceFileId,
+          createdAt: job.createdAt,
+        );
+      }
     }
   }
 
@@ -460,10 +589,14 @@ class BackgroundIngestRunner {
       );
       final path = item.sourcePath;
       if (path != null) {
+        final source = File(path);
+        final stat = await source.exists() ? await source.stat() : null;
         await scanner.repository.markSynced(
           localPath: path,
           fileId: created.fileId,
           contentHash: created.contentHash,
+          sizeBytes: created.sizeBytes,
+          mtimeMs: stat?.modified.millisecondsSinceEpoch,
         );
       }
       log.info(
@@ -616,11 +749,19 @@ class BackgroundIngestRunner {
         (await scanner.repository.listRules()).where((r) => r.enabled).toList();
     final ruleNames = {for (final r in rules) r.id: r.name};
     final now = DateTime.now().toUtc().toIso8601String();
-    return [
-      for (final row in rows)
+    final out = <IngestQueueItem>[];
+    for (final row in rows) {
+      final source = File(row.localPath);
+      final reuse = await source.exists() &&
+          row.contentHash != null &&
+          row.contentHash!.isNotEmpty &&
+          row.mtimeMs != null &&
+          (await source.stat()).size == row.sizeBytes &&
+          (await source.stat()).modified.millisecondsSinceEpoch == row.mtimeMs;
+      out.add(
         IngestQueueItem(
           id: const Uuid().v4(),
-          contentHash: '',
+          contentHash: reuse ? row.contentHash! : '',
           hashAlgo: ContentHash.algo,
           sizeBytes: row.sizeBytes,
           title: row.title,
@@ -631,7 +772,9 @@ class BackgroundIngestRunner {
           replaceFileId: row.fileId,
           createdAt: now,
         ),
-    ];
+      );
+    }
+    return out;
   }
 
   /// Wait for task-isolate `done`/`error`, or unlock if the FG service dies.

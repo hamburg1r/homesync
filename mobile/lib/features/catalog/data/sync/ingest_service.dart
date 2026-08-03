@@ -139,6 +139,9 @@ class IngestService {
   }
 
   /// Hash + enqueue only (no upload). Used before FG task-isolate HTTP.
+  ///
+  /// When [knownContentHash] is set (mtime/size gate already matched), skips
+  /// blake3 and enqueues that digest.
   Future<IngestQueueItem> enqueueFile(
     File source, {
     String? title,
@@ -146,6 +149,7 @@ class IngestService {
     String sourceKind = 'misc',
     String? relativePath,
     String? replaceFileId,
+    String? knownContentHash,
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -156,20 +160,35 @@ class IngestService {
     final display = title ?? p.basename(source.path);
     final size = await source.length();
 
-    final hash = await ContentHash.blake3File(
-      source,
-      onProgress: (done, totalBytes) {
-        onProgress?.call(
-          IngestFileProgress(
-            title: display,
-            index: index,
-            total: total,
-            phase: 'hashing',
-            fraction: totalBytes == 0 ? 1 : done / totalBytes,
-          ),
-        );
-      },
-    );
+    final String hash;
+    final known = knownContentHash?.trim();
+    if (known != null && known.isNotEmpty) {
+      onProgress?.call(
+        IngestFileProgress(
+          title: display,
+          index: index,
+          total: total,
+          phase: 'hashing',
+          fraction: 1,
+        ),
+      );
+      hash = known;
+    } else {
+      hash = await ContentHash.blake3File(
+        source,
+        onProgress: (done, totalBytes) {
+          onProgress?.call(
+            IngestFileProgress(
+              title: display,
+              index: index,
+              total: total,
+              phase: 'hashing',
+              fraction: totalBytes == 0 ? 1 : done / totalBytes,
+            ),
+          );
+        },
+      );
+    }
 
     final item = IngestQueue.newItem(
       contentHash: hash,
@@ -199,6 +218,7 @@ class IngestService {
     String? relativePath,
     String? replaceFileId,
     String? previousContentHash,
+    String? knownContentHash,
     int index = 1,
     int total = 1,
     IngestProgressCallback? onProgress,
@@ -210,14 +230,16 @@ class IngestService {
       sourceKind: sourceKind,
       relativePath: relativePath,
       replaceFileId: replaceFileId,
+      knownContentHash: knownContentHash,
       index: index,
       total: total,
       onProgress: onProgress,
     );
 
     if (replaceFileId != null &&
-        previousContentHash != null &&
-        item.contentHash == previousContentHash) {
+        item.contentHash ==
+            (previousContentHash ??
+                (await repository.getFile(replaceFileId))?.contentHash)) {
       await queue.remove(item.id);
       final existing = await repository.getFile(replaceFileId);
       if (existing != null) {
