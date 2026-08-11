@@ -12,6 +12,7 @@ import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart
 import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/deletion_outbox.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
@@ -40,6 +41,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.tracking,
     required this.scanner,
     required this.backgroundIngest,
+    required this.deletionOutbox,
     required this.settings,
     required this.log,
   }) : super(CatalogState(
@@ -61,6 +63,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   final TrackingRepository tracking;
   final DeviceScanner scanner;
   final BackgroundIngestRunner backgroundIngest;
+  final DeletionOutbox deletionOutbox;
   final SettingsStore settings;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
@@ -96,8 +99,15 @@ class CatalogCubit extends Cubit<CatalogState> {
     _started = true;
     log.info('catalog', 'cubit start');
     final rules = await tracking.listRules();
+    final pendingDeletes = await deletionOutbox.pendingFileIds();
     if (!isClosed) {
-      emit(state.copyWith(rules: rules, syncEnabled: settings.syncEnabled));
+      emit(
+        state.copyWith(
+          rules: rules,
+          syncEnabled: settings.syncEnabled,
+          pendingDeletionIds: pendingDeletes,
+        ),
+      );
     }
     await refresh(showSpinnerWhenEmpty: true);
   }
@@ -571,6 +581,9 @@ class CatalogCubit extends Cubit<CatalogState> {
     );
     if (isClosed) return;
 
+    await flushDeletionOutbox();
+    if (isClosed) return;
+
     final limitRoots =
         scopeToBrowseGroup ? _browseGroupScanRoots() : null;
     if (limitRoots != null) {
@@ -642,6 +655,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   /// Resume durable uploads after the app returns to the foreground.
   Future<void> onAppResumed() async {
     if (!settings.syncEnabled || isClosed) return;
+    await flushDeletionOutbox();
     await backgroundIngest.recoverAfterResume();
     _kickBackgroundIngest();
   }
@@ -753,14 +767,64 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<String?> unpinFile(String fileId) => removeFromDevice(fileId);
 
   /// Soft-delete on the PC; drops local listing + unreferenced pin bytes.
+  ///
+  /// When offline / degraded, queues the DELETE and applies an optimistic
+  /// local tombstone immediately (same local byte discard as online).
   Future<String?> deleteFromPc(String fileId) async {
     if (fileId.startsWith('local:')) {
       return 'Not on the PC yet — sync first or remove the tracking rule';
     }
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
-      final tombstoned = await api.deleteFile(fileId);
-      await repository.applyTombstone(tombstoned);
+      final local = await repository.getFile(fileId);
+      if (local == null) {
+        if (!isClosed) emit(state.copyWith(clearBusyFileId: true));
+        return 'file not found';
+      }
+
+      try {
+        final tombstoned = await api.deleteFile(fileId);
+        await repository.applyTombstone(tombstoned);
+        await deletionOutbox.removeByFileId(fileId);
+      } on HomesyncApiException catch (e) {
+        if (e.statusCode == 404) {
+          await repository.forgetLocalFile(fileId);
+          await deletionOutbox.removeByFileId(fileId);
+        } else {
+          await _queueOptimisticPcDelete(local);
+          await _emitPendingDeletionIds();
+          final files = await repository.listActiveFiles();
+          _catalogFiles = files;
+          if (!isClosed) {
+            emit(
+              state.copyWith(
+                clearBusyFileId: true,
+                statusMessage:
+                    'Queued — will remove on PC when online',
+              ),
+            );
+          }
+          await _emitBrowseList();
+          return null;
+        }
+      } catch (_) {
+        await _queueOptimisticPcDelete(local);
+        await _emitPendingDeletionIds();
+        final files = await repository.listActiveFiles();
+        _catalogFiles = files;
+        if (!isClosed) {
+          emit(
+            state.copyWith(
+              clearBusyFileId: true,
+              statusMessage: 'Queued — will remove on PC when online',
+            ),
+          );
+        }
+        await _emitBrowseList();
+        return null;
+      }
+
+      await _emitPendingDeletionIds();
       final files = await repository.listActiveFiles();
       _catalogFiles = files;
       if (!isClosed) {
@@ -780,6 +844,60 @@ class CatalogCubit extends Cubit<CatalogState> {
       }
       return e.toString();
     }
+  }
+
+  Future<void> _queueOptimisticPcDelete(CatalogFile local) async {
+    await deletionOutbox.enqueue(
+      fileId: local.fileId,
+      title: local.title,
+    );
+    final now = DateTime.now().toUtc().toIso8601String();
+    await repository.applyTombstone(
+      local.copyWith(deletedAt: now, updatedAt: now),
+    );
+    log.info('catalog', 'queued PC delete ${local.fileId}');
+  }
+
+  /// Flush pending PC soft-deletes. Safe to call when online again.
+  Future<int> flushDeletionOutbox() async {
+    final items = await deletionOutbox.list();
+    if (items.isEmpty) {
+      await _emitPendingDeletionIds();
+      return 0;
+    }
+    var flushed = 0;
+    for (final item in items) {
+      try {
+        final tombstoned = await api.deleteFile(item.fileId);
+        await repository.applyTombstone(tombstoned);
+        await deletionOutbox.remove(item.id);
+        flushed += 1;
+      } on HomesyncApiException catch (e) {
+        if (e.statusCode == 404) {
+          await repository.forgetLocalFile(item.fileId);
+          await deletionOutbox.remove(item.id);
+          flushed += 1;
+        } else {
+          log.warn(
+            'catalog',
+            'deletion flush deferred ${item.fileId}: $e',
+          );
+        }
+      } catch (e) {
+        log.warn('catalog', 'deletion flush deferred ${item.fileId}: $e');
+      }
+    }
+    await _emitPendingDeletionIds();
+    if (flushed > 0) {
+      _catalogFiles = await repository.listActiveFiles();
+      await _emitBrowseList();
+    }
+    return flushed;
+  }
+
+  Future<void> _emitPendingDeletionIds() async {
+    final ids = await deletionOutbox.pendingFileIds();
+    if (!isClosed) emit(state.copyWith(pendingDeletionIds: ids));
   }
 
   /// Replace tags on a catalog file (online). Updates local mirror from server ids.
@@ -839,10 +957,13 @@ class CatalogCubit extends Cubit<CatalogState> {
   }
 
   /// Drop a local tombstone / leftover catalog row without a server call.
+  /// Cancels a pending PC deletion outbox row for this id.
   Future<String?> forgetLocalFile(String fileId) async {
     emit(state.copyWith(busyFileId: fileId, clearStatusMessage: true));
     try {
+      await deletionOutbox.removeByFileId(fileId);
       await repository.forgetLocalFile(fileId);
+      await _emitPendingDeletionIds();
       _catalogFiles = await repository.listActiveFiles();
       if (!isClosed) {
         emit(state.copyWith(clearBusyFileId: true));
@@ -867,7 +988,12 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<String?> forgetAllTombstones() async {
     emit(state.copyWith(clearStatusMessage: true));
     try {
+      final tombstoned = await repository.listTombstonedFiles();
+      for (final f in tombstoned) {
+        await deletionOutbox.removeByFileId(f.fileId);
+      }
       final n = await repository.forgetAllTombstones();
+      await _emitPendingDeletionIds();
       _catalogFiles = await repository.listActiveFiles();
       if (!isClosed) {
         emit(

@@ -10,6 +10,7 @@ import 'package:homesync_mobile/features/catalog/data/local_thumb_store.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/deletion_outbox.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
@@ -186,6 +187,7 @@ class TestCatalogHarness {
     required this.pinService,
     required this.thumbService,
     required this.ingestQueue,
+    required this.deletionOutbox,
     required this.ingestService,
     required this.tracking,
     required this.scanner,
@@ -207,6 +209,7 @@ class TestCatalogHarness {
   final PinService pinService;
   final ThumbService thumbService;
   final IngestQueue ingestQueue;
+  final DeletionOutbox deletionOutbox;
   final IngestService ingestService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
@@ -238,6 +241,7 @@ class TestCatalogHarness {
     final repository = CatalogRepository(database, log, blobs, identity);
     final api = HomesyncApi.withClient(settings, log, client);
     final ingestQueue = IngestQueue(settings, log);
+    final deletionOutbox = DeletionOutbox(settings, log);
     final ingestService = IngestService(
       api: api,
       repository: repository,
@@ -290,6 +294,7 @@ class TestCatalogHarness {
       pinService: pinService,
       thumbService: thumbService,
       ingestQueue: ingestQueue,
+      deletionOutbox: deletionOutbox,
       ingestService: ingestService,
       tracking: tracking,
       scanner: scanner,

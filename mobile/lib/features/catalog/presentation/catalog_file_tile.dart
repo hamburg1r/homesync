@@ -10,6 +10,7 @@ class CatalogFileTile extends StatelessWidget {
     super.key,
     required this.file,
     required this.busy,
+    this.pendingPcRemoval = false,
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
@@ -25,6 +26,7 @@ class CatalogFileTile extends StatelessWidget {
 
   final CatalogFile file;
   final bool busy;
+  final bool pendingPcRemoval;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
@@ -43,15 +45,20 @@ class CatalogFileTile extends StatelessWidget {
     final typeLabel = file.mimeType ?? 'unknown type';
     final sizeLabel = formatCatalogBytes(file.sizeBytes);
     final tags = file.tags.isEmpty ? 'no tags' : file.tags.join(', ');
-    final modeLabel = file.statusLabel();
-    final chipColor = file.isDeleted || file.isUploadFailed
+    final modeLabel =
+        pendingPcRemoval ? 'pending removal' : file.statusLabel();
+    final chipColor = pendingPcRemoval ||
+            file.isDeleted ||
+            file.isUploadFailed
         ? theme.colorScheme.errorContainer
         : file.isUploadPending
             ? theme.colorScheme.tertiaryContainer
             : file.isPinned
                 ? theme.colorScheme.primaryContainer
                 : theme.colorScheme.surfaceContainerHighest;
-    final provenance = file.provenanceSubtitle;
+    final provenance = pendingPcRemoval
+        ? 'Pending PC removal'
+        : file.provenanceSubtitle;
     final subtitle = provenance == null
         ? '$typeLabel · $sizeLabel · $tags'
         : '$provenance\n$typeLabel · $sizeLabel · $tags';
@@ -86,6 +93,7 @@ class CatalogFileTile extends StatelessWidget {
           builder: (sheetContext) => CatalogFileDetailSheet(
             file: file,
             busy: busy,
+            pendingPcRemoval: pendingPcRemoval,
             onPin: onPin,
             onUnpin: onUnpin,
             onDeleteFromPc: onDeleteFromPc,

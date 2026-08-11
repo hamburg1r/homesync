@@ -23,6 +23,7 @@ final class CatalogState extends Equatable {
     this.foldersView = false,
     this.treePrefix = '',
     this.hiddenExtensions = const {},
+    this.pendingDeletionIds = const {},
   });
 
   final CatalogViewState viewState;
@@ -44,6 +45,8 @@ final class CatalogState extends Equatable {
   final String treePrefix;
   /// Lowercase extensions to hide in the list (view-only; does not affect sync).
   final Set<String> hiddenExtensions;
+  /// File ids with a queued PC soft-delete (offline outbox).
+  final Set<String> pendingDeletionIds;
 
   CatalogState copyWith({
     CatalogViewState? viewState,
@@ -68,6 +71,7 @@ final class CatalogState extends Equatable {
     bool clearTreePrefix = false,
     Set<String>? hiddenExtensions,
     bool clearHiddenExtensions = false,
+    Set<String>? pendingDeletionIds,
   }) {
     return CatalogState(
       viewState: viewState ?? this.viewState,
@@ -91,6 +95,7 @@ final class CatalogState extends Equatable {
       hiddenExtensions: clearHiddenExtensions
           ? const {}
           : (hiddenExtensions ?? this.hiddenExtensions),
+      pendingDeletionIds: pendingDeletionIds ?? this.pendingDeletionIds,
     );
   }
 
@@ -112,5 +117,6 @@ final class CatalogState extends Equatable {
         foldersView,
         treePrefix,
         hiddenExtensions,
+        pendingDeletionIds,
       ];
 }

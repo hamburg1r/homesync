@@ -19,6 +19,7 @@ class CatalogBrowseView extends StatelessWidget {
     required this.files,
     this.statusMessage,
     this.busyFileId,
+    this.pendingDeletionIds = const {},
     this.browseMode = BrowseMode.allCatalog,
     this.groupRuleId,
     this.groupTitle,
@@ -60,6 +61,7 @@ class CatalogBrowseView extends StatelessWidget {
   final List<CatalogFile> files;
   final String? statusMessage;
   final String? busyFileId;
+  final Set<String> pendingDeletionIds;
   final BrowseMode browseMode;
   final String? groupRuleId;
   final String? groupTitle;
@@ -315,6 +317,7 @@ class CatalogBrowseView extends StatelessWidget {
               files: files,
               statusMessage: statusMessage,
               busyFileId: busyFileId,
+              pendingDeletionIds: pendingDeletionIds,
               browseMode: browseMode,
               foldersView: foldersView,
               treePrefix: treePrefix,
@@ -355,6 +358,7 @@ class _CatalogBrowseBody extends StatelessWidget {
     required this.files,
     this.statusMessage,
     this.busyFileId,
+    this.pendingDeletionIds = const {},
     required this.browseMode,
     required this.foldersView,
     required this.treePrefix,
@@ -378,6 +382,7 @@ class _CatalogBrowseBody extends StatelessWidget {
   final List<CatalogFile> files;
   final String? statusMessage;
   final String? busyFileId;
+  final Set<String> pendingDeletionIds;
   final BrowseMode browseMode;
   final bool foldersView;
   final String treePrefix;
@@ -450,6 +455,8 @@ class _CatalogBrowseBody extends StatelessWidget {
                 return CatalogFileTile(
                   file: file,
                   busy: busyFileId == file.fileId,
+                  pendingPcRemoval:
+                      pendingDeletionIds.contains(file.fileId),
                   onPin: onPin,
                   onUnpin: onUnpin,
                   onDeleteFromPc: onDeleteFromPc,
@@ -511,6 +518,8 @@ class _CatalogBrowseBody extends StatelessWidget {
                   return CatalogFileTile(
                     file: file,
                     busy: busyFileId == file.fileId,
+                    pendingPcRemoval:
+                        pendingDeletionIds.contains(file.fileId),
                     onPin: onPin,
                     onUnpin: onUnpin,
                     onDeleteFromPc: onDeleteFromPc,

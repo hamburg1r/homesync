@@ -403,15 +403,22 @@ Prefix with `/v1/`. Breaking changes bump to `/v2/` or negotiated `Accept` versi
 
 Phone should queue:
 
-- metadata patches
+- metadata patches (Later)
 - availability changes
 - blob uploads
+- **soft-deletes** (`DELETE /v1/files/{id}`) via a durable deletion outbox
 
-Flush on reconnect in order: **blobs first** (so hashes exist), then file rows, then availability/tags.
+Flush on reconnect:
+
+1. **blobs first** (so hashes exist), then file rows, then availability/tags.
+2. **Deletions flush after catalog delta** (and on app resume), independently of ingest uploads — a pending Remove-from-PC must not wait on camera/folder uploads.
+
+Offline Remove-from-PC: enqueue `file_id`, apply an optimistic local tombstone immediately (same local byte discard as online phone-initiated remove), show pending affordance until the DELETE succeeds (or 404 ⇒ already gone). **Forget** on a tombstone cancels any outbox row for that `file_id` (local-only abandon of the pending PC delete).
 
 ```mermaid
 flowchart LR
   Q1[Queued blob uploads] --> Q2[Queued file/metadata] --> Q3[Queued availability]
+  D[Deletion outbox] -.->|after delta / resume| API[DELETE /files/id]
 ```
 
 ## Non-goals for protocol v1

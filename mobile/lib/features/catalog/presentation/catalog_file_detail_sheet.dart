@@ -7,6 +7,7 @@ class CatalogFileDetailSheet extends StatefulWidget {
     super.key,
     required this.file,
     required this.busy,
+    this.pendingPcRemoval = false,
     this.onPin,
     this.onUnpin,
     this.onDeleteFromPc,
@@ -21,6 +22,7 @@ class CatalogFileDetailSheet extends StatefulWidget {
 
   final CatalogFile file;
   final bool busy;
+  final bool pendingPcRemoval;
   final Future<String?> Function(CatalogFile file)? onPin;
   final Future<String?> Function(CatalogFile file)? onUnpin;
   final Future<String?> Function(CatalogFile file)? onDeleteFromPc;
@@ -115,7 +117,9 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
         title: const Text('Remove from PC?'),
         content: Text(
           'Soft-delete “${widget.file.displayName}” on the server. '
-          'It leaves the main catalog and appears under Removed from PC. '
+          'Local copies on this phone are removed immediately. '
+          'If you are offline, the PC delete is queued and sent on the next '
+          'sync. It leaves the main catalog and appears under Removed from PC. '
           'Run GC on the PC later to hard-purge and free blob space.',
         ),
         actions: [
@@ -286,7 +290,14 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
             children: [
               Text(file.displayName, style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 8),
-              if (file.provenanceSubtitle != null)
+              if (widget.pendingPcRemoval)
+                Text(
+                  'Pending PC removal',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                )
+              else if (file.provenanceSubtitle != null)
                 Text(
                   file.provenanceSubtitle!,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -294,15 +305,18 @@ class _CatalogFileDetailSheetState extends State<CatalogFileDetailSheet> {
                       ),
                 ),
               Text(
-                file.isDeleted
-                    ? 'Removed from PC'
-                        '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'
-                    : file.isUploadPending
-                        ? 'Pending upload to PC · on device'
-                        : file.isUploadFailed
-                            ? 'Upload failed · on device'
-                            : 'Availability: ${file.availabilityMode.wire}'
-                                '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}',
+                widget.pendingPcRemoval
+                    ? 'Queued soft-delete · will remove on PC when online'
+                        '${file.hasLocalBytes ? "" : " · local bytes already cleared"}'
+                    : file.isDeleted
+                        ? 'Removed from PC'
+                            '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}'
+                        : file.isUploadPending
+                            ? 'Pending upload to PC · on device'
+                            : file.isUploadFailed
+                                ? 'Upload failed · on device'
+                                : 'Availability: ${file.availabilityMode.wire}'
+                                    '${file.hasLocalBytes ? " · bytes on device" : " · metadata only"}',
               ),
               Text('Type: ${file.mimeType ?? "unknown"}'),
               Text('Size: ${formatCatalogBytes(file.sizeBytes)}'),

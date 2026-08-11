@@ -94,13 +94,15 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           previous.refreshing != current.refreshing ||
           previous.foldersView != current.foldersView ||
           previous.treePrefix != current.treePrefix ||
-          previous.hiddenExtensions != current.hiddenExtensions,
+          previous.hiddenExtensions != current.hiddenExtensions ||
+          previous.pendingDeletionIds != current.pendingDeletionIds,
       builder: (context, state) {
         return CatalogBrowseView(
           state: state.viewState,
           files: state.files,
           statusMessage: state.statusMessage,
           busyFileId: state.busyFileId,
+          pendingDeletionIds: state.pendingDeletionIds,
           browseMode: state.browseMode,
           groupRuleId: state.groupRuleId,
           groupTitle: state.groupTitle,

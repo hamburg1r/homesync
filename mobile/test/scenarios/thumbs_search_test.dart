@@ -114,6 +114,7 @@ void main() {
       tracking: harness.tracking,
       scanner: harness.scanner,
       backgroundIngest: harness.backgroundIngest,
+        deletionOutbox: harness.deletionOutbox,
       settings: harness.settings,
       log: harness.log,
     );
