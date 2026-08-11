@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_filters.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 
 class CatalogBrowseDrawer extends StatelessWidget {
@@ -6,24 +7,24 @@ class CatalogBrowseDrawer extends StatelessWidget {
     super.key,
     required this.browseMode,
     this.groupRuleId,
-    this.deviceAndSyncedOnly = false,
+    this.visibleShowKinds = kAllCatalogShowKinds,
     this.rules = const [],
     this.onSelectBrowse,
-    this.onToggleDeviceSynced,
+    this.onToggleVisibleShowKind,
     this.onOpenSettings,
     this.onOpenConflicts,
   });
 
   final BrowseMode browseMode;
   final String? groupRuleId;
-  final bool deviceAndSyncedOnly;
+  final Set<CatalogShowKind> visibleShowKinds;
   final List<TrackingRule> rules;
   final void Function(
     BrowseMode mode, {
     String? ruleId,
     String? title,
   })? onSelectBrowse;
-  final ValueChanged<bool>? onToggleDeviceSynced;
+  final ValueChanged<CatalogShowKind>? onToggleVisibleShowKind;
   final VoidCallback? onOpenSettings;
   final VoidCallback? onOpenConflicts;
 
@@ -46,12 +47,22 @@ class CatalogBrowseDrawer extends StatelessWidget {
                 ),
               ),
             ),
-            SwitchListTile(
-              title: const Text('On this device & synced'),
-              subtitle: const Text('Hide listed-only / pending'),
-              value: deviceAndSyncedOnly,
-              onChanged: onToggleDeviceSynced,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text(
+                'Show',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
             ),
+            for (final kind in CatalogShowKind.values)
+              CheckboxListTile(
+                dense: true,
+                title: Text(kind.label),
+                value: visibleShowKinds.contains(kind),
+                onChanged: onToggleVisibleShowKind == null
+                    ? null
+                    : (_) => onToggleVisibleShowKind!(kind),
+              ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.cloud_outlined),

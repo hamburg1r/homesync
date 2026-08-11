@@ -182,7 +182,7 @@ class CatalogCubit extends Cubit<CatalogState> {
 
   void _emitFilteredCatalog(List<CatalogFile> files) {
     final filtered = applyCatalogSearch(
-      applyDeviceSyncedFilter(files, enabled: state.deviceAndSyncedOnly),
+      applyVisibilityFilter(files, visible: state.visibleShowKinds),
       query: state.searchQuery,
     );
     if (state.refreshing) {
@@ -272,8 +272,10 @@ class CatalogCubit extends Cubit<CatalogState> {
     await refresh(forceFullScan: true, scopeToBrowseGroup: false);
   }
 
-  Future<void> setDeviceAndSyncedOnly(bool value) async {
-    emit(state.copyWith(deviceAndSyncedOnly: value));
+  Future<void> toggleVisibleShowKind(CatalogShowKind kind) async {
+    final next = {...state.visibleShowKinds};
+    if (!next.add(kind)) next.remove(kind);
+    emit(state.copyWith(visibleShowKinds: next));
     await _emitBrowseList();
   }
 
@@ -322,9 +324,9 @@ class CatalogCubit extends Cubit<CatalogState> {
     List<CatalogFile> files;
     switch (state.browseMode) {
       case BrowseMode.allCatalog:
-        files = applyDeviceSyncedFilter(
+        files = applyVisibilityFilter(
           _catalogFiles,
-          enabled: state.deviceAndSyncedOnly,
+          visible: state.visibleShowKinds,
         );
         final paths = await repository.mapPrimaryRelativePaths(
           files.map((f) => f.fileId),
@@ -375,16 +377,8 @@ class CatalogCubit extends Cubit<CatalogState> {
             f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
         ];
     }
-    if (state.deviceAndSyncedOnly &&
-        state.browseMode != BrowseMode.allCatalog &&
-        state.browseMode != BrowseMode.removedFromPc) {
-      files = files
-          .where((f) => f.hasLocalBytes && !f.fileId.startsWith('local:'))
-          .toList();
-    }
-    if (state.deviceAndSyncedOnly &&
-        state.browseMode == BrowseMode.removedFromPc) {
-      files = files.where((f) => f.hasLocalBytes).toList();
+    if (state.browseMode != BrowseMode.allCatalog) {
+      files = applyVisibilityFilter(files, visible: state.visibleShowKinds);
     }
     files = applyCatalogSearch(files, query: state.searchQuery);
     files = applyHiddenExtensions(

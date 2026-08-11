@@ -1,6 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_filters.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 
 enum CatalogViewState { loading, empty, ready, error, degraded }
@@ -15,7 +16,7 @@ final class CatalogState extends Equatable {
     this.browseMode = BrowseMode.allCatalog,
     this.groupRuleId,
     this.groupTitle,
-    this.deviceAndSyncedOnly = false,
+    this.visibleShowKinds = kAllCatalogShowKinds,
     this.rules = const [],
     this.searchQuery = '',
     this.syncEnabled = true,
@@ -34,7 +35,8 @@ final class CatalogState extends Equatable {
   final BrowseMode browseMode;
   final String? groupRuleId;
   final String? groupTitle;
-  final bool deviceAndSyncedOnly;
+  /// Drawer “Show” checkboxes (listed / cached / pinned / pending / failed).
+  final Set<CatalogShowKind> visibleShowKinds;
   final List<TrackingRule> rules;
   final String searchQuery;
   final bool syncEnabled;
@@ -60,7 +62,7 @@ final class CatalogState extends Equatable {
     String? groupRuleId,
     bool clearGroup = false,
     String? groupTitle,
-    bool? deviceAndSyncedOnly,
+    Set<CatalogShowKind>? visibleShowKinds,
     List<TrackingRule>? rules,
     String? searchQuery,
     bool? syncEnabled,
@@ -83,7 +85,7 @@ final class CatalogState extends Equatable {
       browseMode: browseMode ?? this.browseMode,
       groupRuleId: clearGroup ? null : (groupRuleId ?? this.groupRuleId),
       groupTitle: clearGroup ? null : (groupTitle ?? this.groupTitle),
-      deviceAndSyncedOnly: deviceAndSyncedOnly ?? this.deviceAndSyncedOnly,
+      visibleShowKinds: visibleShowKinds ?? this.visibleShowKinds,
       rules: rules ?? this.rules,
       searchQuery: searchQuery ?? this.searchQuery,
       syncEnabled: syncEnabled ?? this.syncEnabled,
@@ -109,7 +111,7 @@ final class CatalogState extends Equatable {
         browseMode,
         groupRuleId,
         groupTitle,
-        deviceAndSyncedOnly,
+        visibleShowKinds,
         rules,
         searchQuery,
         syncEnabled,

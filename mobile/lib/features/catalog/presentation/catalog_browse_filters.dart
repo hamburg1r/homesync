@@ -1,12 +1,48 @@
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 
-/// Keep files that have local bytes and are not tombstoned.
-List<CatalogFile> applyDeviceSyncedFilter(
+/// Drawer “Show” checkboxes — chip / status categories in the browse list.
+enum CatalogShowKind {
+  listed,
+  cached,
+  pinned,
+  pending,
+  failed;
+
+  String get label => switch (this) {
+        CatalogShowKind.listed => 'Listed',
+        CatalogShowKind.cached => 'Cached',
+        CatalogShowKind.pinned => 'Pinned',
+        CatalogShowKind.pending => 'Pending',
+        CatalogShowKind.failed => 'Failed',
+      };
+}
+
+/// Default: every status visible.
+const Set<CatalogShowKind> kAllCatalogShowKinds = {
+  CatalogShowKind.listed,
+  CatalogShowKind.cached,
+  CatalogShowKind.pinned,
+  CatalogShowKind.pending,
+  CatalogShowKind.failed,
+};
+
+CatalogShowKind catalogShowKindOf(CatalogFile file) {
+  if (file.isUploadFailed) return CatalogShowKind.failed;
+  if (file.isUploadPending) return CatalogShowKind.pending;
+  return switch (file.availabilityMode) {
+    AvailabilityMode.listed => CatalogShowKind.listed,
+    AvailabilityMode.cached => CatalogShowKind.cached,
+    AvailabilityMode.pinned => CatalogShowKind.pinned,
+  };
+}
+
+/// Keep files whose status chip category is in [visible].
+List<CatalogFile> applyVisibilityFilter(
   List<CatalogFile> files, {
-  required bool enabled,
+  required Set<CatalogShowKind> visible,
 }) {
-  if (!enabled) return files;
-  return files.where((f) => f.hasLocalBytes && !f.isDeleted).toList();
+  if (visible.length >= CatalogShowKind.values.length) return files;
+  return files.where((f) => visible.contains(catalogShowKindOf(f))).toList();
 }
 
 /// Local catalog search (title / notes / tags).

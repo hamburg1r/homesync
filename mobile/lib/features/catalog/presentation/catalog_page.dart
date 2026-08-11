@@ -87,7 +87,7 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           previous.browseMode != current.browseMode ||
           previous.groupRuleId != current.groupRuleId ||
           previous.groupTitle != current.groupTitle ||
-          previous.deviceAndSyncedOnly != current.deviceAndSyncedOnly ||
+          previous.visibleShowKinds != current.visibleShowKinds ||
           previous.rules != current.rules ||
           previous.searchQuery != current.searchQuery ||
           previous.syncEnabled != current.syncEnabled ||
@@ -106,7 +106,7 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           browseMode: state.browseMode,
           groupRuleId: state.groupRuleId,
           groupTitle: state.groupTitle,
-          deviceAndSyncedOnly: state.deviceAndSyncedOnly,
+          visibleShowKinds: state.visibleShowKinds,
           rules: state.rules,
           searchQuery: state.searchQuery,
           syncEnabled: state.syncEnabled,
@@ -151,8 +151,8 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
           onSelectBrowse: (mode, {ruleId, title}) => context
               .read<CatalogCubit>()
               .setBrowseMode(mode, groupRuleId: ruleId, groupTitle: title),
-          onToggleDeviceSynced: (v) =>
-              context.read<CatalogCubit>().setDeviceAndSyncedOnly(v),
+          onToggleVisibleShowKind: (kind) =>
+              context.read<CatalogCubit>().toggleVisibleShowKind(kind),
           onSearchChanged: (q) =>
               context.read<CatalogCubit>().setSearchQuery(q),
           onLoadThumb: (file) =>

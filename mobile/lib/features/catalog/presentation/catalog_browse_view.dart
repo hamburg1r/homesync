@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_drawer.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_filters.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_browse_tree.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_file_tile.dart';
 import 'package:homesync_mobile/features/catalog/presentation/catalog_message_pane.dart';
@@ -23,7 +24,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.browseMode = BrowseMode.allCatalog,
     this.groupRuleId,
     this.groupTitle,
-    this.deviceAndSyncedOnly = false,
+    this.visibleShowKinds = kAllCatalogShowKinds,
     this.rules = const [],
     this.searchQuery = '',
     this.syncEnabled = true,
@@ -47,7 +48,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.onResolveLocalPath,
     this.onCatalogRelativePath,
     this.onSelectBrowse,
-    this.onToggleDeviceSynced,
+    this.onToggleVisibleShowKind,
     this.onSearchChanged,
     this.onLoadThumb,
     this.onSetFoldersView,
@@ -65,7 +66,7 @@ class CatalogBrowseView extends StatelessWidget {
   final BrowseMode browseMode;
   final String? groupRuleId;
   final String? groupTitle;
-  final bool deviceAndSyncedOnly;
+  final Set<CatalogShowKind> visibleShowKinds;
   final List<TrackingRule> rules;
   final String searchQuery;
   final bool syncEnabled;
@@ -93,7 +94,7 @@ class CatalogBrowseView extends StatelessWidget {
     String? ruleId,
     String? title,
   })? onSelectBrowse;
-  final ValueChanged<bool>? onToggleDeviceSynced;
+  final ValueChanged<CatalogShowKind>? onToggleVisibleShowKind;
   final ValueChanged<String>? onSearchChanged;
   final Future<File?> Function(CatalogFile file)? onLoadThumb;
   final ValueChanged<bool>? onSetFoldersView;
@@ -236,10 +237,10 @@ class CatalogBrowseView extends StatelessWidget {
       drawer: CatalogBrowseDrawer(
         browseMode: browseMode,
         groupRuleId: groupRuleId,
-        deviceAndSyncedOnly: deviceAndSyncedOnly,
+        visibleShowKinds: visibleShowKinds,
         rules: rules,
         onSelectBrowse: onSelectBrowse,
-        onToggleDeviceSynced: onToggleDeviceSynced,
+        onToggleVisibleShowKind: onToggleVisibleShowKind,
         onOpenSettings: onOpenSettings,
         onOpenConflicts: onOpenConflicts,
       ),
