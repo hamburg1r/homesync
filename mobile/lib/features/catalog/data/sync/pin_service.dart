@@ -23,13 +23,20 @@ class PinException implements Exception {
 
 /// Options for where PC→phone bytes land on device.
 class PinDestination {
-  const PinDestination({this.directory, this.fileName});
+  const PinDestination({
+    this.directory,
+    this.fileName,
+    this.overwrite = false,
+  });
 
   /// Absolute folder; null uses [SettingsStore.pinDestinationDir] or CAS store.
   final String? directory;
 
   /// Basename under [directory]; null uses catalog display name.
   final String? fileName;
+
+  /// When true, write exactly to [directory]/[fileName] (no unique suffix).
+  final bool overwrite;
 }
 
 /// Pin = availability update **and** blob materialization (both required).
@@ -314,7 +321,10 @@ class PinService {
         ? destination!.fileName!.trim()
         : file.displayName;
     final safeName = _sanitizeFileName(rawName);
-    final dest = await _uniqueFile(dir, safeName);
+    final overwrite = destination?.overwrite == true;
+    final dest = overwrite
+        ? File(p.join(dir.path, safeName))
+        : await _uniqueFile(dir, safeName);
     await dest.writeAsBytes(bytes, flush: true);
     await repository.setPinLocalPath(file.fileId, dest.path);
     log.info('pin', 'materialized ${file.fileId} → ${dest.path}');

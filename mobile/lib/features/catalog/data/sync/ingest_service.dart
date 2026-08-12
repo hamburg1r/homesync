@@ -52,6 +52,7 @@ class IngestFileProgress {
         'preparing' => 'Preparing',
         'hashing' => 'Hashing',
         'uploading' => 'Uploading',
+        'downloading' => 'Downloading',
         'storing' => 'Storing',
         'finishing' => 'Finishing',
         _ => phase,

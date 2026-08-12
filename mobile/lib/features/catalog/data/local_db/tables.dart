@@ -156,3 +156,19 @@ class ScanDirCache extends Table {
   @override
   Set<Column<Object>> get primaryKey => {dirPath};
 }
+
+/// Phone-only: auto-pin catalog files under a relative_path prefix (PC→phone).
+@DataClassName('FolderPinSubscriptionRow')
+class FolderPinSubscriptions extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  /// Catalog `file_paths.relative_path` prefix (directory boundary).
+  TextColumn get pathPrefix => text()();
+  /// Absolute phone directory that mirrors the tree under [pathPrefix].
+  TextColumn get localRoot => text()();
+  BoolColumn get enabled => boolean().withDefault(const Constant(true))();
+  TextColumn get createdAt => text()();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
