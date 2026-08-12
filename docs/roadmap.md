@@ -237,5 +237,6 @@ Record important choices here as they happen.
 | 2026-08-03 | Tracking rules default off; disable cancels pending; include-children never track-all | Was whole-folder when children disabled / pending ignored enable |
 | 2026-08-04 | Regex tracking rules: optional Bound to server → auto-bind matches on ingest / edit | Same pin_server_binds opt-in as file detail toggle |
 | 2026-08-04 | Phone deletion outbox for offline Remove from PC | SharedPreferences queue; optimistic tombstone + local byte drop; flush after delta / resume; Forget cancels |
+| 2026-08-11 | Phone folder pin subscriptions (path-prefix Keep on device) | Auto-pin under catalog relative_path; local tree; bound; no server API |
 | 2026-08-03 | Manual GC: `POST /v1/gc` + `homesync-gc`; `gc_purges` + delta `purged[]` | Soft-delete until explicit hard-purge; phone Forget for leftover Removed rows |
 | 2026-08-03 | Phone tag edit via PUT `/files/{id}/tags` + chip UI in detail sheet | Display/search already existed; write path was missing; browse-by-tag Later |

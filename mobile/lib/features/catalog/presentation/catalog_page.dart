@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:homesync_mobile/app/injection.dart';
@@ -11,6 +12,7 @@ import 'package:homesync_mobile/features/catalog/presentation/ingest_progress_ba
 import 'package:homesync_mobile/features/catalog/presentation/kdbx_conflicts_sheet.dart';
 import 'package:homesync_mobile/features/catalog/presentation/pin_destination_dialog.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
+import 'package:homesync_mobile/features/settings/presentation/add_folder_pin_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sheet.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -54,6 +56,20 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
         tracking: getIt<TrackingRepository>(),
         scanner: getIt<DeviceScanner>(),
         onRulesChanged: () => cubit.onRulesChanged(),
+        listFolderPins: cubit.listFolderPinSubscriptions,
+        onKeepFolderOnDevice: ({
+          required pathPrefix,
+          required localRoot,
+          name,
+        }) =>
+            cubit.keepFolderOnDevice(
+              pathPrefix: pathPrefix,
+              localRoot: localRoot,
+              name: name,
+            ),
+        onSetFolderPinEnabled: (id, {required enabled}) =>
+            cubit.setFolderPinEnabled(id, enabled: enabled),
+        onDeleteFolderPin: cubit.deleteFolderPinSubscription,
         currentDeviceId: cubit.currentDeviceId,
         onListDevices: cubit.listServerDevices,
         onReclaimDevice: cubit.reclaimDeviceId,
@@ -167,9 +183,48 @@ class _CatalogPageState extends State<CatalogPage> with WidgetsBindingObserver {
               context.read<CatalogCubit>().toggleHiddenExtension(ext),
           onClearHiddenExtensions: () =>
               context.read<CatalogCubit>().clearHiddenExtensions(),
+          onKeepFolderOnDevice: (prefix) =>
+              _keepFolderOnDevice(context, prefix),
         );
       },
     );
+  }
+
+  Future<String?> _keepFolderOnDevice(
+    BuildContext context,
+    String pathPrefix,
+  ) async {
+    final cubit = context.read<CatalogCubit>();
+    final draft = await showDialog<
+        ({String name, String pathPrefix, String localRoot})>(
+      context: context,
+      builder: (context) => AddFolderPinDialog(
+        initialPrefix: pathPrefix,
+        initialName: pathPrefix.split('/').last,
+        initialLocalRoot: cubit.settings.pinDestinationDir ?? '',
+      ),
+    );
+    if (draft == null) return 'cancelled';
+    var localRoot = draft.localRoot;
+    if (localRoot.isEmpty) {
+      final picked = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Phone folder for ${draft.name}',
+      );
+      if (picked == null) return 'cancelled';
+      localRoot = picked;
+    }
+    if (!context.mounted) return 'cancelled';
+    final err = await cubit.keepFolderOnDevice(
+      pathPrefix: draft.pathPrefix,
+      localRoot: localRoot,
+      name: draft.name,
+    );
+    if (context.mounted && err == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Keeping ${draft.name} on device')),
+      );
+    }
+    return err;
   }
 
   Future<String?> _bringToPhone(BuildContext context, CatalogFile file) async {

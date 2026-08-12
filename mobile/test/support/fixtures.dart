@@ -12,10 +12,13 @@ import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_run
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/deletion_outbox.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/device_identity.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_repository.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_queue.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
+import 'package:homesync_mobile/features/catalog/presentation/catalog_cubit.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_repository.dart';
@@ -188,6 +191,8 @@ class TestCatalogHarness {
     required this.thumbService,
     required this.ingestQueue,
     required this.deletionOutbox,
+    required this.folderPinSubscriptions,
+    required this.folderPins,
     required this.ingestService,
     required this.tracking,
     required this.scanner,
@@ -210,6 +215,8 @@ class TestCatalogHarness {
   final ThumbService thumbService;
   final IngestQueue ingestQueue;
   final DeletionOutbox deletionOutbox;
+  final FolderPinRepository folderPinSubscriptions;
+  final FolderPinService folderPins;
   final IngestService ingestService;
   final TrackingRepository tracking;
   final DeviceScanner scanner;
@@ -217,6 +224,22 @@ class TestCatalogHarness {
   final Directory blobRoot;
   final Directory thumbRoot;
   final Directory scanRoot;
+
+  CatalogCubit makeCubit() => CatalogCubit(
+        repository: repository,
+        sync: sync,
+        api: api,
+        pinService: pinService,
+        thumbService: thumbService,
+        tracking: tracking,
+        scanner: scanner,
+        backgroundIngest: backgroundIngest,
+        deletionOutbox: deletionOutbox,
+        folderPins: folderPins,
+        folderPinSubscriptions: folderPinSubscriptions,
+        settings: settings,
+        log: log,
+      );
 
   static Future<TestCatalogHarness> open(
     MockClient client, {
@@ -242,6 +265,7 @@ class TestCatalogHarness {
     final api = HomesyncApi.withClient(settings, log, client);
     final ingestQueue = IngestQueue(settings, log);
     final deletionOutbox = DeletionOutbox(settings, log);
+    final folderPinSubscriptions = FolderPinRepository(database, log);
     final ingestService = IngestService(
       api: api,
       repository: repository,
@@ -264,6 +288,12 @@ class TestCatalogHarness {
       blobs: blobs,
       identity: identity,
       settings: settings,
+      log: log,
+    );
+    final folderPins = FolderPinService(
+      subscriptions: folderPinSubscriptions,
+      repository: repository,
+      pinService: pinService,
       log: log,
     );
     final thumbService = ThumbService(api: api, thumbs: thumbs, log: log);
@@ -295,6 +325,8 @@ class TestCatalogHarness {
       thumbService: thumbService,
       ingestQueue: ingestQueue,
       deletionOutbox: deletionOutbox,
+      folderPinSubscriptions: folderPinSubscriptions,
+      folderPins: folderPins,
       ingestService: ingestService,
       tracking: tracking,
       scanner: scanner,

@@ -76,6 +76,8 @@ void main() {
           scanner: harness.scanner,
           backgroundIngest: harness.backgroundIngest,
           deletionOutbox: harness.deletionOutbox,
+          folderPins: harness.folderPins,
+          folderPinSubscriptions: harness.folderPinSubscriptions,
           settings: harness.settings,
           log: harness.log,
         );

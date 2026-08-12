@@ -2,16 +2,19 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 import 'package:homesync_mobile/features/settings/data/settings_store.dart';
+import 'package:homesync_mobile/features/settings/presentation/add_folder_pin_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/add_tracking_rule_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/edit_tracking_rule_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/folder_name_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/reclaim_device_dialog.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_appearance_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_downloads_section.dart';
+import 'package:homesync_mobile/features/settings/presentation/settings_folder_pin_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_server_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_sync_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/settings_tracking_section.dart';
 import 'package:homesync_mobile/features/settings/presentation/tracking_rule_draft.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_models.dart';
 import 'package:homesync_mobile/features/tracking/data/device_scanner.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_models.dart';
 import 'package:homesync_mobile/features/tracking/data/tracking_pattern.dart';
@@ -24,6 +27,10 @@ class SettingsSheet extends StatefulWidget {
     required this.tracking,
     required this.scanner,
     this.onRulesChanged,
+    this.listFolderPins,
+    this.onKeepFolderOnDevice,
+    this.onSetFolderPinEnabled,
+    this.onDeleteFolderPin,
     this.currentDeviceId,
     this.onListDevices,
     this.onReclaimDevice,
@@ -34,6 +41,15 @@ class SettingsSheet extends StatefulWidget {
   final TrackingRepository tracking;
   final DeviceScanner scanner;
   final VoidCallback? onRulesChanged;
+  final Future<List<FolderPinSubscription>> Function()? listFolderPins;
+  final Future<String?> Function({
+    required String pathPrefix,
+    required String localRoot,
+    String? name,
+  })? onKeepFolderOnDevice;
+  final Future<String?> Function(String id, {required bool enabled})?
+      onSetFolderPinEnabled;
+  final Future<String?> Function(String id)? onDeleteFolderPin;
   final String? currentDeviceId;
   final Future<List<DeviceInfo>> Function()? onListDevices;
   final Future<String?> Function(String deviceId)? onReclaimDevice;
@@ -49,6 +65,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
   String? _urlError;
   List<TrackingRule> _rules = const [];
   bool _loadingRules = true;
+  List<FolderPinSubscription> _folderPins = const [];
+  bool _loadingFolderPins = true;
 
   @override
   void initState() {
@@ -56,6 +74,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
     _url = TextEditingController(text: widget.settings.baseUrl);
     _name = TextEditingController(text: widget.settings.deviceName);
     _reloadRules();
+    _reloadFolderPins();
   }
 
   @override
@@ -72,6 +91,73 @@ class _SettingsSheetState extends State<SettingsSheet> {
       _rules = rules;
       _loadingRules = false;
     });
+  }
+
+  Future<void> _reloadFolderPins() async {
+    final listFn = widget.listFolderPins;
+    if (listFn == null) {
+      if (mounted) setState(() => _loadingFolderPins = false);
+      return;
+    }
+    final pins = await listFn();
+    if (!mounted) return;
+    setState(() {
+      _folderPins = pins;
+      _loadingFolderPins = false;
+    });
+  }
+
+  Future<void> _addFolderPin() async {
+    final draft = await showDialog<
+        ({String name, String pathPrefix, String localRoot})>(
+      context: context,
+      builder: (context) => AddFolderPinDialog(
+        initialLocalRoot: widget.settings.pinDestinationDir ?? '',
+      ),
+    );
+    if (draft == null || widget.onKeepFolderOnDevice == null) return;
+    var localRoot = draft.localRoot;
+    if (localRoot.isEmpty) {
+      final picked = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Phone folder for vault',
+      );
+      if (picked == null) return;
+      localRoot = picked;
+    }
+    final err = await widget.onKeepFolderOnDevice!(
+      pathPrefix: draft.pathPrefix,
+      localRoot: localRoot,
+      name: draft.name,
+    );
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    await _reloadFolderPins();
+  }
+
+  Future<void> _toggleFolderPin(FolderPinSubscription sub, bool enabled) async {
+    final err = await widget.onSetFolderPinEnabled?.call(
+      sub.id,
+      enabled: enabled,
+    );
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    await _reloadFolderPins();
+  }
+
+  Future<void> _deleteFolderPin(FolderPinSubscription sub) async {
+    final err = await widget.onDeleteFolderPin?.call(sub.id);
+    if (!mounted) return;
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    await _reloadFolderPins();
   }
 
   Future<void> _save() async {
@@ -378,6 +464,20 @@ class _SettingsSheetState extends State<SettingsSheet> {
               SettingsAppearanceSection(
                 settings: widget.settings,
                 onChanged: () => setState(() {}),
+              ),
+              const Divider(height: 32),
+              SettingsFolderPinSection(
+                subscriptions: _folderPins,
+                loading: _loadingFolderPins,
+                onToggle: widget.onSetFolderPinEnabled == null
+                    ? null
+                    : _toggleFolderPin,
+                onDelete: widget.onDeleteFolderPin == null
+                    ? null
+                    : _deleteFolderPin,
+                onAdd: widget.onKeepFolderOnDevice == null
+                    ? null
+                    : _addFolderPin,
               ),
               const Divider(height: 32),
               SettingsTrackingSection(

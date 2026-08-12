@@ -89,6 +89,8 @@ When phone learns about a file that exists only on Linux:
 
 Pinned files must appear in availability with `pinned` and trigger blob fetch.
 
+**Keep folder on device (phone):** optional path-prefix subscriptions (Drift `folder_pin_subscriptions`) auto-pin every active catalog file whose primary mirrored `relative_path` is under that prefix after each catalog refresh. Bytes are written under a chosen phone directory preserving the subpath relative to the prefix; pins are Bound to server so PC soft-delete drops local copies. Not phone→PC tracking rules; no new server endpoints.
+
 ## Blob transfer
 
 Implemented (Milestone 4 GET + Milestone 5 PUT + resumable uploads):

@@ -13,6 +13,9 @@ import 'package:homesync_mobile/features/catalog/data/models/kdbx_conflict.dart'
 import 'package:homesync_mobile/features/catalog/data/sync/background_ingest_runner.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/catalog_sync.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/deletion_outbox.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_models.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_repository.dart';
+import 'package:homesync_mobile/features/catalog/data/sync/folder_pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/ingest_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/pin_service.dart';
 import 'package:homesync_mobile/features/catalog/data/sync/thumb_service.dart';
@@ -42,6 +45,8 @@ class CatalogCubit extends Cubit<CatalogState> {
     required this.scanner,
     required this.backgroundIngest,
     required this.deletionOutbox,
+    required this.folderPins,
+    required this.folderPinSubscriptions,
     required this.settings,
     required this.log,
   }) : super(CatalogState(
@@ -64,6 +69,8 @@ class CatalogCubit extends Cubit<CatalogState> {
   final DeviceScanner scanner;
   final BackgroundIngestRunner backgroundIngest;
   final DeletionOutbox deletionOutbox;
+  final FolderPinService folderPins;
+  final FolderPinRepository folderPinSubscriptions;
   final SettingsStore settings;
   final AppLog log;
   StreamSubscription<List<CatalogFile>>? _filesSub;
@@ -659,6 +666,83 @@ class CatalogCubit extends Cubit<CatalogState> {
     }
 
     _kickBackgroundIngest();
+    unawaited(_reconcileFolderPins());
+  }
+
+  Future<void> _reconcileFolderPins() async {
+    if (!settings.syncEnabled || isClosed) return;
+    try {
+      await folderPins.reconcileAll(onProgress: _emitIngestProgress);
+      if (isClosed) return;
+      emit(state.copyWith(clearIngestProgress: true));
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      await _emitBrowseList();
+    } catch (e) {
+      log.warn('catalog', 'folder pin reconcile failed: $e');
+      if (!isClosed) {
+        emit(state.copyWith(clearIngestProgress: true));
+      }
+    }
+  }
+
+  /// Subscribe to a catalog path prefix and materialize under [localRoot].
+  Future<String?> keepFolderOnDevice({
+    required String pathPrefix,
+    required String localRoot,
+    String? name,
+  }) async {
+    try {
+      final sub = await folderPinSubscriptions.add(
+        name: name ?? pathPrefix,
+        pathPrefix: pathPrefix,
+        localRoot: localRoot,
+        enabled: true,
+      );
+      await folderPins.reconcile(sub, onProgress: _emitIngestProgress);
+      if (!isClosed) {
+        emit(state.copyWith(clearIngestProgress: true));
+      }
+      final files = await repository.listActiveFiles();
+      _catalogFiles = files;
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      log.warn('catalog', 'keep folder on device failed: $e');
+      if (!isClosed) {
+        emit(state.copyWith(clearIngestProgress: true));
+      }
+      return e.toString();
+    }
+  }
+
+  Future<List<FolderPinSubscription>> listFolderPinSubscriptions() =>
+      folderPinSubscriptions.list();
+
+  Future<String?> setFolderPinEnabled(String id, {required bool enabled}) async {
+    try {
+      await folderPinSubscriptions.setEnabled(id, enabled: enabled);
+      if (enabled) {
+        final sub = await folderPinSubscriptions.get(id);
+        if (sub != null) {
+          await folderPins.reconcile(sub, onProgress: _emitIngestProgress);
+        }
+      }
+      if (!isClosed) emit(state.copyWith(clearIngestProgress: true));
+      await _emitBrowseList();
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  Future<String?> deleteFolderPinSubscription(String id) async {
+    try {
+      await folderPinSubscriptions.delete(id);
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
   }
 
   void _kickBackgroundIngest() {

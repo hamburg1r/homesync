@@ -56,6 +56,7 @@ class CatalogBrowseView extends StatelessWidget {
     this.onTreeNavigateUp,
     this.onToggleHiddenExtension,
     this.onClearHiddenExtensions,
+    this.onKeepFolderOnDevice,
   });
 
   final CatalogViewState state;
@@ -102,6 +103,8 @@ class CatalogBrowseView extends StatelessWidget {
   final VoidCallback? onTreeNavigateUp;
   final ValueChanged<String>? onToggleHiddenExtension;
   final VoidCallback? onClearHiddenExtensions;
+  /// Keep current folders-view path prefix on device (auto-pin).
+  final Future<String?> Function(String pathPrefix)? onKeepFolderOnDevice;
 
   String get _title {
     switch (browseMode) {
@@ -176,6 +179,16 @@ class CatalogBrowseView extends StatelessWidget {
                   await onForceRescan?.call();
                 case _AppMenuAction.clearHidden:
                   onClearHiddenExtensions?.call();
+                case _AppMenuAction.keepFolderOnDevice:
+                  final prefix = treePrefix.trim();
+                  if (prefix.isNotEmpty) {
+                    final err = await onKeepFolderOnDevice!(prefix);
+                    if (context.mounted && err != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(err)),
+                      );
+                    }
+                  }
               }
             },
             itemBuilder: (context) => [
@@ -189,6 +202,13 @@ class CatalogBrowseView extends StatelessWidget {
                 checked: foldersView,
                 child: const Text('Folders'),
               ),
+              if (foldersView &&
+                  treePrefix.isNotEmpty &&
+                  onKeepFolderOnDevice != null)
+                const PopupMenuItem(
+                  value: _AppMenuAction.keepFolderOnDevice,
+                  child: Text('Keep this folder on device'),
+                ),
               if (browseMode == BrowseMode.group && extMenu.isNotEmpty) ...[
                 const PopupMenuDivider(),
                 const PopupMenuItem(
@@ -351,6 +371,7 @@ enum _AppMenuAction {
   foldersView,
   forceRescan,
   clearHidden,
+  keepFolderOnDevice,
 }
 
 class _CatalogBrowseBody extends StatelessWidget {
