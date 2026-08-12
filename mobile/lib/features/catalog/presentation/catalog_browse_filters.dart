@@ -1,6 +1,17 @@
 import 'package:homesync_mobile/features/catalog/data/models/catalog_models.dart';
 
-/// Drawer “Show” checkboxes — chip / status categories in the browse list.
+/// Human-readable summary for the drawer status filter control.
+String formatStatusFilterSummary(Set<CatalogShowKind> visible) {
+  if (visible.length >= CatalogShowKind.values.length) return 'All statuses';
+  if (visible.isEmpty) return 'None';
+  final labels = CatalogShowKind.values
+      .where(visible.contains)
+      .map((k) => k.label)
+      .toList();
+  return labels.join(', ');
+}
+
+/// Drawer status filter — chip / availability categories in the browse list.
 enum CatalogShowKind {
   listed,
   cached,

@@ -35,7 +35,7 @@ final class CatalogState extends Equatable {
   final BrowseMode browseMode;
   final String? groupRuleId;
   final String? groupTitle;
-  /// Drawer “Show” checkboxes (listed / cached / pinned / pending / failed).
+  /// Drawer status filter (listed / cached / pinned / pending / failed).
   final Set<CatalogShowKind> visibleShowKinds;
   final List<TrackingRule> rules;
   final String searchQuery;

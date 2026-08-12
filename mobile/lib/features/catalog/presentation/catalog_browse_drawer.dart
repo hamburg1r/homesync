@@ -47,22 +47,24 @@ class CatalogBrowseDrawer extends StatelessWidget {
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-              child: Text(
-                'Show',
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
+            ExpansionTile(
+              leading: const Icon(Icons.filter_list_outlined),
+              title: const Text('Status filter'),
+              subtitle: Text(formatStatusFilterSummary(visibleShowKinds)),
+              initiallyExpanded: false,
+              children: [
+                for (final kind in CatalogShowKind.values)
+                  CheckboxListTile(
+                    dense: true,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: Text(kind.label),
+                    value: visibleShowKinds.contains(kind),
+                    onChanged: onToggleVisibleShowKind == null
+                        ? null
+                        : (_) => onToggleVisibleShowKind!(kind),
+                  ),
+              ],
             ),
-            for (final kind in CatalogShowKind.values)
-              CheckboxListTile(
-                dense: true,
-                title: Text(kind.label),
-                value: visibleShowKinds.contains(kind),
-                onChanged: onToggleVisibleShowKind == null
-                    ? null
-                    : (_) => onToggleVisibleShowKind!(kind),
-              ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.cloud_outlined),
