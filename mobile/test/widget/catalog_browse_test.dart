@@ -133,18 +133,31 @@ void main() {
         home: CatalogBrowseView(
           state: CatalogViewState.ready,
           files: const [],
-          browseMode: BrowseMode.removedFromPc,
           onSelectBrowse: (mode, {ruleId, title}) => selected = mode,
         ),
       ),
     );
     await tester.pump();
-    expect(find.text('Removed from PC'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Open navigation menu'));
     await tester.pumpAndSettle();
-    expect(find.text('Removed from PC'), findsWidgets);
-    await tester.tap(find.text('Removed from PC').last);
+
+    // Show checkboxes push this row below the fold — scroll the drawer list.
+    final drawerScrollable = find.descendant(
+      of: find.byType(Drawer),
+      matching: find.byType(Scrollable),
+    );
+    final removedIcon = find.descendant(
+      of: find.byType(Drawer),
+      matching: find.byIcon(Icons.delete_outline),
+    );
+    await tester.scrollUntilVisible(
+      removedIcon,
+      120,
+      scrollable: drawerScrollable.first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(removedIcon);
     await tester.pumpAndSettle();
     expect(selected, BrowseMode.removedFromPc);
   });

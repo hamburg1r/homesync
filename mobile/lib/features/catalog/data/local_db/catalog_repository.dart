@@ -411,6 +411,14 @@ class CatalogRepository {
     return row?.absolutePath;
   }
 
+  /// All custom pin destination mappings (for folder-pin orphan cleanup).
+  Future<List<({String fileId, String absolutePath})>> listPinLocalPaths() async {
+    final rows = await _db.select(_db.pinLocalPaths).get();
+    return [
+      for (final r in rows) (fileId: r.fileId, absolutePath: r.absolutePath),
+    ];
+  }
+
   Future<void> setPinLocalPath(String fileId, String absolutePath) async {
     await _db.into(_db.pinLocalPaths).insertOnConflictUpdate(
           PinLocalPathsCompanion.insert(
@@ -494,6 +502,19 @@ class CatalogRepository {
     return out;
   }
 
+  /// Active (non-tombstoned) files with a primary relative path, if any.
+  Future<List<({CatalogFile file, String relativePath})>>
+      listActiveFilesWithPrimaryPaths() async {
+    final files = await listActiveFiles();
+    if (files.isEmpty) return const [];
+    final paths = await mapPrimaryRelativePaths(files.map((f) => f.fileId));
+    return [
+      for (final f in files)
+        if (paths.containsKey(f.fileId))
+          (file: f, relativePath: paths[f.fileId]!),
+    ];
+  }
+
   int _pathRank(CatalogPathRow p) {
     var score = 0;
     if (p.isCurrent && p.goneAt == null) score += 100;
@@ -524,6 +545,17 @@ class CatalogRepository {
     if (row == null) return null;
     final mapped = await _mapFilesWithTags([row]);
     return mapped.first;
+  }
+
+  /// Batch load catalog rows by id (one map pass — avoids N× getFile).
+  Future<Map<String, CatalogFile>> mapFilesByIds(Iterable<String> fileIds) async {
+    final want = fileIds.toSet();
+    if (want.isEmpty) return {};
+    final rows = await (_db.select(_db.catalogFiles)
+          ..where((f) => f.fileId.isIn(want.toList())))
+        .get();
+    final mapped = await _mapFilesWithTags(rows);
+    return {for (final f in mapped) f.fileId: f};
   }
 
   Future<List<CatalogFile>> listActiveFiles() async {
@@ -560,24 +592,93 @@ class CatalogRepository {
   }
 
   Future<List<CatalogFile>> _mapFilesWithTags(List<CatalogFileRow> rows) async {
+    if (rows.isEmpty) return const [];
+    // SQLite variable limit (~999); keep bulk `isIn` queries under the cap.
+    const chunkSize = 400;
+    if (rows.length > chunkSize) {
+      final out = <CatalogFile>[];
+      for (var i = 0; i < rows.length; i += chunkSize) {
+        final end = i + chunkSize > rows.length ? rows.length : i + chunkSize;
+        out.addAll(await _mapFilesWithTags(rows.sublist(i, end)));
+      }
+      return out;
+    }
     final deviceId = await _identity.ensureDeviceId();
+    final ids = [for (final r in rows) r.fileId];
+
+    // Bulk joins — avoid per-row round-trips on every watch/list.
+    final tagByFile = await _tagNamesForMany(ids);
+    final availRows = await (_db.select(_db.catalogAvailability)
+          ..where(
+            (a) => a.deviceId.equals(deviceId) & a.fileId.isIn(ids),
+          ))
+        .get();
+    final modeByFile = {
+      for (final a in availRows) a.fileId: AvailabilityMode.parse(a.mode),
+    };
+    final pinLocalRows = await (_db.select(_db.pinLocalPaths)
+          ..where((t) => t.fileId.isIn(ids)))
+        .get();
+    final pinLocalByFile = {
+      for (final r in pinLocalRows) r.fileId: r.absolutePath,
+    };
+    final bindRows = await (_db.select(_db.pinServerBinds)
+          ..where((t) => t.fileId.isIn(ids)))
+        .get();
+    final boundByFile = {
+      for (final r in bindRows) r.fileId: r.deleteOnTombstone,
+    };
+    final pathRows = await (_db.select(_db.catalogPaths)
+          ..where((p) => p.fileId.isIn(ids)))
+        .get();
+    final pathsByFile = <String, List<CatalogPathRow>>{};
+    for (final row in pathRows) {
+      pathsByFile.putIfAbsent(row.fileId, () => []).add(row);
+    }
+    final originRows = await (_db.select(_db.localTrackedFiles)
+          ..where((t) => t.fileId.isIn(ids))
+          ..orderBy([(t) => OrderingTerm.desc(t.seenAt)]))
+        .get();
+    final originsByFile = <String, List<String>>{};
+    for (final row in originRows) {
+      final fileId = row.fileId;
+      if (fileId == null) continue;
+      originsByFile.putIfAbsent(fileId, () => []).add(row.localPath);
+    }
+
+    final blobHits = await Future.wait([
+      for (final row in rows) _blobs.has(row.hashAlgo, row.contentHash),
+    ]);
+    final pinExists = await Future.wait([
+      for (final row in rows)
+        () async {
+          final path = pinLocalByFile[row.fileId];
+          if (path == null) return false;
+          return File(path).exists();
+        }(),
+    ]);
+    final originExists = await Future.wait([
+      for (final row in rows)
+        () async {
+          final paths = originsByFile[row.fileId];
+          if (paths == null || paths.isEmpty) return false;
+          for (final path in paths) {
+            if (await File(path).exists()) return true;
+          }
+          return false;
+        }(),
+    ]);
+
     final result = <CatalogFile>[];
-    for (final row in rows) {
-      final tags = await _tagNamesFor(row.fileId);
-      final avail = await (_db.select(_db.catalogAvailability)
-            ..where(
-              (a) =>
-                  a.fileId.equals(row.fileId) & a.deviceId.equals(deviceId),
-            ))
-          .getSingleOrNull();
-      final mode = AvailabilityMode.parse(avail?.mode ?? 'listed');
-      final hasPin = await _blobs.has(row.hashAlgo, row.contentHash);
-      final origin = await originPathForFileId(row.fileId);
-      final hasOrigin = origin != null && await File(origin).exists();
-      final pinLocal = await pinLocalPathForFileId(row.fileId);
-      final hasPinLocal = pinLocal != null && await File(pinLocal).exists();
-      final sourceKind = await _primarySourceKind(row.fileId);
-      final bound = await _isBoundToServer(row.fileId);
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      final pathList = pathsByFile[row.fileId];
+      String? sourceKind;
+      if (pathList != null && pathList.isNotEmpty) {
+        pathList.sort((a, b) => _pathRank(b).compareTo(_pathRank(a)));
+        final kind = pathList.first.sourceKind.trim().toLowerCase();
+        if (kind.isNotEmpty && kind != 'unknown') sourceKind = kind;
+      }
       result.add(
         CatalogFile(
           fileId: row.fileId,
@@ -591,24 +692,35 @@ class CatalogRepository {
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
-          tags: tags,
-          availabilityMode: mode,
-          hasLocalBytes: hasPin || hasOrigin || hasPinLocal,
+          tags: tagByFile[row.fileId] ?? const [],
+          availabilityMode: modeByFile[row.fileId] ?? AvailabilityMode.listed,
+          hasLocalBytes: blobHits[i] || originExists[i] || pinExists[i],
           primarySourceKind: sourceKind,
-          boundToServer: bound,
+          boundToServer: boundByFile[row.fileId] ?? false,
         ),
       );
     }
     return result;
   }
 
-  /// Prefer current / known provenance for ghost restore labels.
-  Future<String?> _primarySourceKind(String fileId) async {
-    final path = await _primaryPathRow(fileId);
-    if (path == null) return null;
-    final kind = path.sourceKind.trim().toLowerCase();
-    if (kind.isEmpty || kind == 'unknown') return null;
-    return kind;
+  Future<Map<String, List<String>>> _tagNamesForMany(List<String> fileIds) async {
+    if (fileIds.isEmpty) return {};
+    final query = _db.select(_db.catalogFileTags).join([
+      innerJoin(
+        _db.catalogTags,
+        _db.catalogTags.tagId.equalsExp(_db.catalogFileTags.tagId),
+      ),
+    ])
+      ..where(_db.catalogFileTags.fileId.isIn(fileIds))
+      ..orderBy([OrderingTerm.asc(_db.catalogTags.name)]);
+    final rows = await query.get();
+    final out = <String, List<String>>{};
+    for (final r in rows) {
+      final ft = r.readTable(_db.catalogFileTags);
+      final tag = r.readTable(_db.catalogTags);
+      out.putIfAbsent(ft.fileId, () => []).add(tag.name);
+    }
+    return out;
   }
 
   /// Update mirrored provenance after ``PATCH /files/{id}`` source_kind.
@@ -635,19 +747,6 @@ class CatalogRepository {
     if (others.isEmpty) {
       await _blobs.delete(algo, contentHash);
     }
-  }
-
-  Future<List<String>> _tagNamesFor(String fileId) async {
-    final query = _db.select(_db.catalogTags).join([
-      innerJoin(
-        _db.catalogFileTags,
-        _db.catalogFileTags.tagId.equalsExp(_db.catalogTags.tagId),
-      ),
-    ])
-      ..where(_db.catalogFileTags.fileId.equals(fileId))
-      ..orderBy([OrderingTerm.asc(_db.catalogTags.name)]);
-    final rows = await query.get();
-    return rows.map((r) => r.readTable(_db.catalogTags).name).toList();
   }
 
   /// All mirrored tags (for suggestions / autocomplete).

@@ -71,6 +71,8 @@ class CatalogCubit extends Cubit<CatalogState> {
   List<CatalogFile> _catalogFiles = const [];
   bool _started = false;
   bool _refreshBusy = false;
+  /// Bumps on each browse-mode / filter list rebuild; stale awaits must not emit.
+  int _browseEpoch = 0;
   DateTime? _lastIngestProgressEmit;
   IngestFileProgress? _lastIngestProgress;
 
@@ -109,7 +111,17 @@ class CatalogCubit extends Cubit<CatalogState> {
         ),
       );
     }
-    await refresh(showSpinnerWhenEmpty: true);
+    // Paint the local mirror immediately — sync/scan continues after first paint.
+    await _hydrateLocalCatalog();
+    await refresh(showSpinnerWhenEmpty: state.files.isEmpty);
+  }
+
+  /// Load SQLite catalog into UI without waiting for network.
+  Future<void> _hydrateLocalCatalog() async {
+    final files = await repository.listActiveFiles();
+    _catalogFiles = files;
+    if (isClosed) return;
+    await _emitBrowseList();
   }
 
   String? get currentDeviceId => sync.identity.currentDeviceId;
@@ -173,7 +185,7 @@ class CatalogCubit extends Cubit<CatalogState> {
   void _onCatalogFiles(List<CatalogFile> files) {
     _catalogFiles = files;
     if (isClosed) return;
-    if (state.browseMode != BrowseMode.allCatalog) {
+    if (state.browseMode != BrowseMode.allCatalog || state.foldersView) {
       unawaited(_emitBrowseList());
       return;
     }
@@ -185,21 +197,18 @@ class CatalogCubit extends Cubit<CatalogState> {
       applyVisibilityFilter(files, visible: state.visibleShowKinds),
       query: state.searchQuery,
     );
-    if (state.refreshing) {
-      emit(state.copyWith(files: filtered));
-      return;
-    }
     if (state.viewState == CatalogViewState.error ||
         state.viewState == CatalogViewState.degraded) {
       emit(state.copyWith(files: filtered));
       return;
     }
+    // While refreshing, still show local rows (do not keep a full-screen spinner).
     emit(
       state.copyWith(
         files: filtered,
         viewState:
             filtered.isEmpty ? CatalogViewState.empty : CatalogViewState.ready,
-        clearStatusMessage: true,
+        clearStatusMessage: !state.refreshing,
       ),
     );
   }
@@ -214,6 +223,7 @@ class CatalogCubit extends Cubit<CatalogState> {
     String? groupRuleId,
     String? groupTitle,
   }) async {
+    final epoch = ++_browseEpoch;
     emit(
       state.copyWith(
         browseMode: mode,
@@ -222,9 +232,11 @@ class CatalogCubit extends Cubit<CatalogState> {
         clearGroup: mode != BrowseMode.group,
         clearTreePrefix: true,
         clearHiddenExtensions: mode != BrowseMode.group,
+        files: const [],
+        viewState: CatalogViewState.loading,
       ),
     );
-    await _emitBrowseList();
+    await _emitBrowseList(epoch: epoch);
   }
 
   Future<void> setFoldersView(bool enabled) async {
@@ -320,7 +332,8 @@ class CatalogCubit extends Cubit<CatalogState> {
     emit(state.copyWith(ingestProgress: p));
   }
 
-  Future<void> _emitBrowseList() async {
+  Future<void> _emitBrowseList({int? epoch}) async {
+    final browseEpoch = epoch ?? ++_browseEpoch;
     List<CatalogFile> files;
     switch (state.browseMode) {
       case BrowseMode.allCatalog:
@@ -328,17 +341,24 @@ class CatalogCubit extends Cubit<CatalogState> {
           _catalogFiles,
           visible: state.visibleShowKinds,
         );
-        final paths = await repository.mapPrimaryRelativePaths(
-          files.map((f) => f.fileId),
-        );
-        files = [
-          for (final f in files)
-            f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
-        ];
+        // Flat list uses title; only folders view needs catalog relative paths.
+        if (state.foldersView) {
+          final paths = await repository.mapPrimaryRelativePaths(
+            files.map((f) => f.fileId),
+          );
+          if (browseEpoch != _browseEpoch || isClosed) return;
+          files = [
+            for (final f in files)
+              f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
+          ];
+        }
       case BrowseMode.group:
         final ids = await tracking.groupRuleIds(state.groupRuleId);
+        if (browseEpoch != _browseEpoch || isClosed) return;
         final locals = await tracking.listLocalFiles(ruleIds: ids);
+        if (browseEpoch != _browseEpoch || isClosed) return;
         files = await _localsToCatalogFiles(locals);
+        if (browseEpoch != _browseEpoch || isClosed) return;
         TrackingRule? groupRule;
         for (final r in state.rules) {
           if (r.id == state.groupRuleId) {
@@ -363,20 +383,27 @@ class CatalogCubit extends Cubit<CatalogState> {
         }
       case BrowseMode.trackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listTracked());
+        if (browseEpoch != _browseEpoch || isClosed) return;
         files = _withStrippedCommonPrefix(files);
       case BrowseMode.untrackedOnDevice:
         files = await _localsToCatalogFiles(await tracking.listUntracked());
+        if (browseEpoch != _browseEpoch || isClosed) return;
         files = _withStrippedCommonPrefix(files);
       case BrowseMode.removedFromPc:
         files = await repository.listTombstonedFiles();
-        final paths = await repository.mapPrimaryRelativePaths(
-          files.map((f) => f.fileId),
-        );
-        files = [
-          for (final f in files)
-            f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
-        ];
+        if (browseEpoch != _browseEpoch || isClosed) return;
+        if (state.foldersView) {
+          final paths = await repository.mapPrimaryRelativePaths(
+            files.map((f) => f.fileId),
+          );
+          if (browseEpoch != _browseEpoch || isClosed) return;
+          files = [
+            for (final f in files)
+              f.copyWith(browsePath: paths[f.fileId] ?? f.title ?? f.fileId),
+          ];
+        }
     }
+    if (browseEpoch != _browseEpoch || isClosed) return;
     if (state.browseMode != BrowseMode.allCatalog) {
       files = applyVisibilityFilter(files, visible: state.visibleShowKinds);
     }
@@ -385,7 +412,7 @@ class CatalogCubit extends Cubit<CatalogState> {
       files,
       hidden: state.hiddenExtensions,
     );
-    if (isClosed) return;
+    if (browseEpoch != _browseEpoch || isClosed) return;
     final preserve =
         state.viewState == CatalogViewState.error ||
         state.viewState == CatalogViewState.degraded;
@@ -404,10 +431,15 @@ class CatalogCubit extends Cubit<CatalogState> {
   Future<List<CatalogFile>> _localsToCatalogFiles(
     List<LocalTrackedFile> locals,
   ) async {
+    final syncedIds = <String>[
+      for (final local in locals)
+        if (local.isSynced && local.fileId != null) local.fileId!,
+    ];
+    final catalogById = await repository.mapFilesByIds(syncedIds);
     final out = <CatalogFile>[];
     for (final local in locals) {
       if (local.isSynced && local.fileId != null) {
-        final catalog = await repository.getFile(local.fileId!);
+        final catalog = catalogById[local.fileId!];
         if (catalog != null) {
           out.add(catalog.copyWith(browsePath: local.localPath));
           continue;
