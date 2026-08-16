@@ -31,14 +31,13 @@ def health() -> dict[str, str]:
 
 
 def run() -> None:
-    import os
-
     import uvicorn
 
+    from homesync_server.config import server_bind
+
     # Default localhost. Use HOMESYNC_HOST=0.0.0.0 for LAN/Tailscale (no auth yet).
-    host = os.environ.get("HOMESYNC_HOST", "127.0.0.1")
-    port = int(os.environ.get("HOMESYNC_PORT", "8787"))
-    uvicorn.run("homesync_server.main:app", host=host, port=port, reload=True)
+    host, port, reload = server_bind()
+    uvicorn.run("homesync_server.main:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

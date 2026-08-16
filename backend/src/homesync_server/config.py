@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_HASH_ALGO = "blake3"
+DEFAULT_BIND_HOST = "127.0.0.1"
+DEFAULT_BIND_PORT = 8787
 
 
 class ConfigError(ValueError):
@@ -95,6 +97,29 @@ def data_root() -> Path:
     if cfg.data_dir is not None:
         return cfg.data_dir
     return default_data_root()
+
+
+def env_flag(name: str, *, default: bool = False) -> bool:
+    """Parse a boolean environment variable (``1`` / ``true`` / ``yes`` / ``on``)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def server_bind() -> tuple[str, int, bool]:
+    """HTTP bind from the environment: ``(host, port, uvicorn_reload)``.
+
+    Defaults: ``127.0.0.1:8787``, reload off. Set ``HOMESYNC_RELOAD=1`` for local
+    ``uv run``. NixOS systemd leaves reload off.
+    """
+    host = os.environ.get("HOMESYNC_HOST") or DEFAULT_BIND_HOST
+    port_raw = os.environ.get("HOMESYNC_PORT") or str(DEFAULT_BIND_PORT)
+    try:
+        port = int(port_raw)
+    except ValueError as exc:
+        raise ConfigError(f"HOMESYNC_PORT must be an integer, got {port_raw!r}") from exc
+    return host, port, env_flag("HOMESYNC_RELOAD")
 
 
 def catalog_db_path(root: Path | None = None) -> Path:

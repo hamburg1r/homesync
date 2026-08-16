@@ -11,7 +11,9 @@ from homesync_server.config import (
     config_path,
     data_root,
     default_data_root,
+    env_flag,
     load_config,
+    server_bind,
     write_data_dir,
 )
 
@@ -69,6 +71,27 @@ def test_bad_data_dir_type_raises(tmp_path: Path) -> None:
     cfg.write_text("data_dir = 123\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="non-empty string"):
         load_config(cfg)
+
+
+def test_server_bind_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOMESYNC_HOST", raising=False)
+    monkeypatch.delenv("HOMESYNC_PORT", raising=False)
+    monkeypatch.delenv("HOMESYNC_RELOAD", raising=False)
+    assert server_bind() == ("127.0.0.1", 8787, False)
+
+
+def test_server_bind_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOMESYNC_HOST", "0.0.0.0")
+    monkeypatch.setenv("HOMESYNC_PORT", "9000")
+    monkeypatch.setenv("HOMESYNC_RELOAD", "1")
+    assert server_bind() == ("0.0.0.0", 9000, True)
+    assert env_flag("HOMESYNC_RELOAD") is True
+
+
+def test_server_bind_bad_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOMESYNC_PORT", "nope")
+    with pytest.raises(ConfigError, match="HOMESYNC_PORT"):
+        server_bind()
 
 
 def test_write_data_dir_creates_and_updates(tmp_path: Path) -> None:
