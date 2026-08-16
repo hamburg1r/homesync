@@ -72,6 +72,10 @@ Responsibilities:
 - Materialize blobs for pin/cache.
 - Ingest phone-captured media up to the host with provenance.
 
+### Linux CLI (`homesync`)
+
+Same HTTP client role as Flutter: register `kind=linux`, browse listed metadata, pin+materialize, ingest, tags, tombstone, KeePass outbox. Local pin paths live in `~/.local/share/homesync-client/pins.json`, not in the canonical catalog.
+
 ### Out of scope for the core daemon
 
 - Replacing Syncthing for arbitrary project folders unrelated to the catalog.

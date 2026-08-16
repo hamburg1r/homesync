@@ -56,6 +56,7 @@ cd backend
 uv sync --extra dev
 uv run homesync-server
 # → http://127.0.0.1:8787/health
+# Reload while hacking: HOMESYNC_RELOAD=1 uv run homesync-server
 # Phone / LAN: HOMESYNC_HOST=0.0.0.0 uv run homesync-server  (no auth yet; LAN/VPN only)
 
 # Index a library folder (hash-in-place; uses resolved data root)
@@ -66,6 +67,12 @@ uv run homesync-migrate-data --to /mnt/your-hdd/homesync
 
 # Metadata API smoke (daemon running; catalog indexed)
 ../scripts/metadata_api_smoke.sh
+
+# Catalog CLI (same HTTP as the phone; daemon must be running)
+uv run homesync init --name toaster
+uv run homesync ls
+uv run homesync pin hello.txt --to ~/Downloads/homesync
+uv run homesync ingest ~/Pictures/IMG_001.jpg
 ```
 
 ### Layout
@@ -78,7 +85,8 @@ backend/
   src/homesync_server/
     __init__.py
     main.py               # FastAPI app entry (+ DB bootstrap on lifespan)
-    cli.py                # homesync-index
+    cli.py                # homesync-index / homesync-gc
+    client/               # homesync Linux catalog CLI (HTTP, like the phone)
     config.py             # HOMESYNC_DATA / config.toml / data_root
     migrate_data.py       # homesync-migrate-data
     db/                   # engine, migrations
@@ -236,6 +244,26 @@ nix develop .#mobile --command ./scripts/mobile_check.sh
 | Presentational widgets | `mobile/test/widget/` | Thin UI state smoke |
 
 Naming maps to roadmap (`phone_catalog_test.dart`, later `pin_materialize_test.dart`, …). Flutter requires the `*_test.dart` suffix. Do **not** stub failing placeholders for unfinished milestones. Codegen must be generated locally (not in VCS).
+
+## Linux catalog CLI (`homesync`)
+
+Talks to a running daemon over HTTP — same `/v1` surface as the Android app (register device, list/search, pin+download, ingest, tags, tombstone, KeePass outbox). It does **not** open `catalog.sqlite` itself. Phone-only local policy (tracking regex, Drift folder-pin rows) is approximated with `ingest --walk` and `keep-folder`.
+
+```bash
+uv run homesync init --name toaster          # POST /v1/devices (kind=linux)
+uv run homesync ls                           # listed metadata
+uv run homesync show hello.txt
+uv run homesync pin hello.txt --to ~/Downloads/homesync
+uv run homesync unpin hello.txt              # listed; drop local pin bytes
+uv run homesync ingest ~/Pictures/IMG_001.jpg
+uv run homesync ingest --walk ~/Camera
+uv run homesync keep-folder Pictures --to ~/offline
+uv run homesync tag hello.txt --add family
+uv run homesync rm hello.txt                 # soft-delete on PC
+uv run homesync conflicts
+```
+
+Config: `~/.config/homesync/client.toml` (`HOMESYNC_CLIENT_CONFIG`), or `HOMESYNC_URL` / `HOMESYNC_DEVICE_ID`. Default pin folder: `~/Downloads/homesync`.
 
 ## Editing the flake
 

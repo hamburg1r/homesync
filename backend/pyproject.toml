@@ -23,6 +23,7 @@ dev = [
 ]
 
 [project.scripts]
+homesync = "homesync_server.client.cli:run"
 homesync-server = "homesync_server.main:run"
 homesync-index = "homesync_server.cli:run_index"
 homesync-gc = "homesync_server.cli:run_gc"

@@ -55,7 +55,7 @@ flowchart TB
 
 | Path | Role | Stack |
 |---|---|---|
-| `backend/` | Catalog daemon + API + indexer | Python 3.12, FastAPI, SQLAlchemy, SQLite, uv |
+| `backend/` | Catalog daemon + API + indexer + `homesync` CLI | Python 3.12, FastAPI, SQLAlchemy, SQLite, uv |
 | `mobile/` | Android client | Flutter (Android only — no Linux/desktop Flutter target) |
 | `flake.nix` | Dev shells | `default`/`backend` (light), `mobile` (Flutter + JDK) |
 | `docs/` | Design docs | Canonical product/tech decisions |
@@ -143,6 +143,8 @@ nix develop
 cd backend
 uv sync --extra dev
 uv run homesync-server          # 127.0.0.1:8787
+uv run homesync init            # register this machine; then homesync ls / pin / ingest
+# auto-reload while hacking: HOMESYNC_RELOAD=1 uv run homesync-server
 uv run pytest                   # scenario E2E (required after exit-check work)
 ruff check .
 ```

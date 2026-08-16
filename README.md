@@ -60,6 +60,7 @@ cd ~/repo/homesync
 nix develop                 # or: direnv allow
 cd backend && uv sync
 uv run homesync-server      # http://127.0.0.1:8787/health
+uv run homesync init && uv run homesync ls   # Linux catalog client
 ```
 
 ### Mobile

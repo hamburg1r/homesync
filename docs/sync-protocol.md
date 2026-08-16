@@ -10,6 +10,8 @@ Homesync sync is **catalog-first**, then **blob-on-demand**.
 4. Phone can **download blobs by content hash** (resumable ideally).
 5. Conflicts stay boring in v1: **last-write-wins** on metadata rows.
 
+The Linux `homesync` CLI is a second client of this protocol (`kind=linux`), not a second catalog.
+
 ## Actors
 
 ```mermaid
