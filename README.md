@@ -32,6 +32,7 @@ Early scaffolding:
 | Piece | State |
 |---|---|
 | Nix flake (`backend` / `mobile` shells) | Ready |
+| NixOS module + systemd (`services.homesync`) | Ready |
 | Python FastAPI health endpoint | Ready |
 | Flutter Android app skeleton | Ready |
 | Catalog schema, indexer, sync protocol | Planned — see [docs/](docs/) |
@@ -41,7 +42,8 @@ Early scaffolding:
 ```text
 homesync/
 ├── AGENTS.md              # Instructions for AI agents (and humans pairing with them)
-├── flake.nix              # Nix dev shells
+├── flake.nix              # Dev shells + NixOS package/module
+├── nix/                   # uv2nix package + systemd module
 ├── backend/               # Python catalog daemon
 │   ├── pyproject.toml
 │   ├── uv.lock
@@ -73,6 +75,15 @@ cd mobile && flutter run
 ```
 
 Default shell is **backend-only** so potato PCs don’t pull Flutter/JDK on every enter. Use `.#mobile` when working on the app.
+
+### NixOS (systemd)
+
+```nix
+imports = [ inputs.homesync.nixosModules.homesync ];
+services.homesync.enable = true;  # 127.0.0.1:8787, /var/lib/homesync
+```
+
+See [docs/development.md](docs/development.md) (NixOS install). Do not expose the bind on a hostile network; v1 has no auth.
 
 ## Core ideas (one screen)
 

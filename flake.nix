@@ -4,9 +4,39 @@
 	inputs = {
 		nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable?shallow=1";
 		flake-utils.url = "github:numtide/flake-utils?shallow=1";
+
+		pyproject-nix = {
+			url = "github:pyproject-nix/pyproject.nix?shallow=1";
+			inputs.nixpkgs.follows = "nixpkgs";
+		};
+		uv2nix = {
+			url = "github:pyproject-nix/uv2nix?shallow=1";
+			inputs.pyproject-nix.follows = "pyproject-nix";
+			inputs.nixpkgs.follows = "nixpkgs";
+		};
+		pyproject-build-systems = {
+			url = "github:pyproject-nix/build-system-pkgs?shallow=1";
+			inputs.pyproject-nix.follows = "pyproject-nix";
+			inputs.uv2nix.follows = "uv2nix";
+			inputs.nixpkgs.follows = "nixpkgs";
+		};
 	};
 
-	outputs = { self, nixpkgs, flake-utils }:
+	outputs = { self, nixpkgs, flake-utils, pyproject-nix, uv2nix, pyproject-build-systems }:
+		let
+			inherit (nixpkgs) lib;
+			workspace = uv2nix.lib.workspace.loadWorkspace {
+				workspaceRoot = ./backend;
+			};
+			pyprojectOverlay = workspace.mkPyprojectOverlay {
+				sourcePreference = "wheel";
+			};
+			homesyncServerFor = pkgs:
+				import ./nix/package.nix {
+					inherit lib pkgs workspace pyproject-nix pyproject-build-systems pyprojectOverlay;
+					python3 = pkgs.python312;
+				};
+		in
 		flake-utils.lib.eachDefaultSystem (system:
 		let
 			pkgs = import nixpkgs {
@@ -132,9 +162,11 @@
 					export HOMESYNC_SQLITE3_LIB="${pkgs.sqlite.out}/lib/libsqlite3.so"
 				'';
 			};
+			homesyncServer = homesyncServerFor pkgs;
 		in {
 			# Default is backend-only so direnv/`nix develop` stay light on potato PCs.
 			# Use `nix develop .#mobile` (or `use flake .#mobile` in .envrc) for Flutter.
+			# Production install: `nix build .#homesync-server` / NixOS module (uv.lock wheels).
 			devShells = {
 				default = backendShell;
 				backend = backendShell;
@@ -142,5 +174,36 @@
 			};
 
 			devShell = backendShell;
-		});
+
+			packages = {
+				default = homesyncServer;
+				homesync-server = homesyncServer;
+			};
+
+			checks = lib.optionalAttrs pkgs.stdenv.isLinux {
+				homesync-nixos-service =
+					let
+						eval = nixpkgs.lib.nixosSystem {
+							inherit system;
+							modules = [
+								self.nixosModules.homesync
+								{
+									boot.isContainer = true;
+									services.homesync.enable = true;
+									system.stateVersion = "25.05";
+								}
+							];
+						};
+					in
+					pkgs.writeText "homesync-unit-check" eval.config.systemd.services.homesync.serviceConfig.ExecStart;
+			};
+		})
+		// {
+			overlays.default = _final: prev: {
+				homesync-server = self.packages.${prev.stdenv.hostPlatform.system}.homesync-server;
+			};
+
+			nixosModules.homesync = import ./nix/nixos-module.nix self;
+			nixosModules.default = self.nixosModules.homesync;
+		};
 }

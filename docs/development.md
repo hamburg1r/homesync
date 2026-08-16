@@ -265,6 +265,32 @@ uv run homesync conflicts
 
 Config: `~/.config/homesync/client.toml` (`HOMESYNC_CLIENT_CONFIG`), or `HOMESYNC_URL` / `HOMESYNC_DEVICE_ID`. Default pin folder: `~/Downloads/homesync`.
 
+## NixOS install (systemd)
+
+The flake exports `packages.homesync-server` (uv.lock via uv2nix, wheels preferred) and `nixosModules.homesync`. Dev shells stay uv/`.venv`; do not merge that env into `nix develop`.
+
+```nix
+# In your NixOS flake
+inputs.homesync.url = "git+file:///home/you/repo/homesync"; # or github:…
+
+{
+  imports = [ inputs.homesync.nixosModules.homesync ];
+  services.homesync = {
+    enable = true;
+    # Default: 127.0.0.1:8787, data in /var/lib/homesync, no auth.
+    # host = "100.x.y.z";  # Tailscale; do not bind 0.0.0.0 on a hostile net
+    indexRoots = [ "/home/you/Pictures" ];  # also bind-mounted read-only for hash-in-place
+    indexInterval = "daily";
+  };
+}
+```
+
+Then `nixos-rebuild switch`. Daemon: `systemctl status homesync`. Index once: `systemctl start homesync-index`. Catalog client: `homesync init && homesync ls` (talks to the daemon on localhost). Host tools (`homesync-index`, `homesync-gc`, `homesync-migrate-data`) are on PATH; they need the same `HOMESYNC_DATA` (the unit sets it). Example: `sudo -u homesync homesync-index --root /home/you/Pictures`.
+
+Move an existing store onto the service data dir with `homesync-migrate-data` **before** starting the unit, or set `services.homesync.dataDir` to the current path.
+
+Build without NixOS: `nix build .#homesync-server`.
+
 ## Editing the flake
 
 - Keep `shallow=1` on inputs if you like faster locks (matches sibling projects).
@@ -281,6 +307,6 @@ When you change:
 | API routes / sync behavior | `docs/sync-protocol.md` |
 | Components / trust model | `docs/architecture.md` |
 | Build order / non-goals | `docs/roadmap.md` |
-| How to run tools | this file |
+| How to run tools / NixOS module | this file |
 
 Agents: see root `AGENTS.md` and `docs/`.

@@ -57,7 +57,7 @@ flowchart TB
 |---|---|---|
 | `backend/` | Catalog daemon + API + indexer + `homesync` CLI | Python 3.12, FastAPI, SQLAlchemy, SQLite, uv |
 | `mobile/` | Android client | Flutter (Android only — no Linux/desktop Flutter target) |
-| `flake.nix` | Dev shells | `default`/`backend` (light), `mobile` (Flutter + JDK) |
+| `flake.nix` | Dev shells + NixOS package/module | `default`/`backend` (light), `mobile` (Flutter + JDK); `nixosModules.homesync` |
 | `docs/` | Design docs | Canonical product/tech decisions |
 
 Do **not** create a second competing backend language (Go/Rust) unless the human explicitly asks. Python was chosen for ship-speed on a weak machine; uv avoids Nix compiling heavy native Python wheels.
@@ -134,7 +134,8 @@ Display names and “original paths” live in the DB, not as the only identity.
 - Default shell = **backend** (Python + uv + sqlite + ruff). Keep it light.
 - Flutter work = `nix develop .#mobile` (or change `.envrc` temporarily to `use flake .#mobile`).
 - Reuse `$HOME/.android-sdk` like other projects in this user’s `~/repo` (see `installdeps` / `connectadb` in the flake).
-- **Do not** switch the backend flake to `python.withPackages` that pulls Pillow/SciPy/etc. Use **uv** + wheels in `backend/.venv`.
+- **Do not** switch the **dev shell** to `python.withPackages` that pulls Pillow/SciPy/etc. Use **uv** + wheels in `backend/.venv`.
+- NixOS install uses **uv2nix** + `backend/uv.lock` (prefer wheels). That is packaging, not the default `nix develop` shell.
 
 ### Python backend
 

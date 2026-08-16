@@ -170,7 +170,7 @@ See `docs/development.md` (Quality checks) and `AGENTS.md` (Testing).
 
 - Flutter `integration_test` or Maestro: browse → pin → airplane-mode open (after Milestone 3–4 UI)
 - Multi-device phones
-- Auth tokens + NixOS module systemd service
+- Auth tokens (NixOS systemd module for the daemon exists; token auth still later)
 - Hash-dedup blob migration tooling
 - EXIF-rich filters, maps, albums
 - Export tags to XMP
@@ -238,6 +238,7 @@ Record important choices here as they happen.
 | 2026-08-04 | Regex tracking rules: optional Bound to server → auto-bind matches on ingest / edit | Same pin_server_binds opt-in as file detail toggle |
 | 2026-08-04 | Phone deletion outbox for offline Remove from PC | SharedPreferences queue; optimistic tombstone + local byte drop; flush after delta / resume; Forget cancels |
 | 2026-08-11 | Phone folder pin subscriptions (path-prefix Keep on device) | Auto-pin under catalog relative_path; local tree; bound; no server API |
+| 2026-08-14 | NixOS `services.homesync` via uv2nix wheels + systemd | Installable daemon; keep `nix develop` on uv/.venv; reload off in production |
 | 2026-08-14 | Linux `homesync` CLI as HTTP catalog client | Same /v1 flows as Flutter (list/pin/ingest/tags); not a second catalog |
 | 2026-08-03 | Manual GC: `POST /v1/gc` + `homesync-gc`; `gc_purges` + delta `purged[]` | Soft-delete until explicit hard-purge; phone Forget for leftover Removed rows |
 | 2026-08-03 | Phone tag edit via PUT `/files/{id}/tags` + chip UI in detail sheet | Display/search already existed; write path was missing; browse-by-tag Later |

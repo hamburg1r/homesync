@@ -94,6 +94,7 @@ flowchart LR
 
 - v1: daemon listens on `127.0.0.1` or Tailscale IP with a shared token (when auth lands).
 - Do not bind `0.0.0.0` to a hostile network without auth + TLS assumptions documented.
+- NixOS: `services.homesync` (flake `nixosModules.homesync`) runs `homesync-server` under systemd, data in `/var/lib/homesync` by default. Auth is still later; keep the bind on localhost or VPN.
 
 ## Source of truth split
 
